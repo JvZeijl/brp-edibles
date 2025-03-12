@@ -6,10 +6,12 @@ import os, os.path as path
 from dirs import DATA_FOLDER, OUTPUT_FOLDER
 
 class Spectrum:
-    def __init__(self, target):
+    def __init__(self, target, wavelength=None, flux=None):
         self.target = target
 
-        wavelength, flux = self._read_spectrum()
+        if wavelength is None or flux is None:
+            wavelength, flux = self._read_spectrum()
+        
         self.wavelength = wavelength
         self.flux = flux
 
