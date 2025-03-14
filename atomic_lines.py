@@ -19,12 +19,15 @@ NA_I_LINES: list[AtomicLine] = [
 ]
 
 K_I_LINES: list[AtomicLine] = [
-    ('K I', 7664.8991),
-    ('K I', 7698.9645)
+    # ('K I', 7664.8991),
+    # ('K I', 7698.9645)
+    ('K I', 5801.75),
+    ('K I', 5812.15)
 ]
 
 CA_I_LINES: list[AtomicLine] = [
-    # TODO
+    ('Ca I', 6102.722),
+    ('Ca I', 6122.219)
 ]
 
 CA_II_LINES: list[AtomicLine] = [
