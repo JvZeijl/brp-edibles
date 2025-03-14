@@ -46,5 +46,5 @@ class Spectrum:
         ax.plot(self.wavelength, self.flux, '.', ms=2)
         ax.set_title(self.target)
         ax.set_xlabel('Wavelength [Å]')
-        ax.set_ylabel('Normalized flux')
+        ax.set_ylabel('Flux')
         
