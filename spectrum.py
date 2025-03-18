@@ -25,7 +25,7 @@ class Spectrum:
         axes: tuple[plt.Axes, plt.Axes] = None,
         draw_expected = False,
         output_radial_velocity = False,
-        output_tollerance = False
+        output_difference = False
     ) -> np.ndarray:
         # Preparing expected wavelength information
         min_wvl, max_wvl = np.sort([line1.wavelength, line2.wavelength])
@@ -42,7 +42,17 @@ class Spectrum:
         peaks_wvl_matrix = np.reshape(peaks_wvl, (-1, 1))
         peaks_diff_matrix = peaks_wvl_matrix - peaks_wvl_matrix.transpose()
         diff_from_expectation = np.abs(peaks_diff_matrix - expected_peak_diff)
-        candidate_pairs = peaks_wvl[np.argwhere(diff_from_expectation < tollerance)]
+
+        # Getting the pairs of absorption peak
+        candidate_pairs = None
+
+        # If the tollerance is None, only return the best pair
+        if tollerance is None:
+            # Only return the best pair; if no pairs are found np.min crashes, therefore use 0 instead
+            lowest_diff = np.min(diff_from_expectation) if len(diff_from_expectation) > 0 else 0
+            candidate_pairs = peaks_wvl[np.argwhere(diff_from_expectation == lowest_diff)]
+        else:
+            candidate_pairs = peaks_wvl[np.argwhere(diff_from_expectation < tollerance)]
 
         # (Optional) Visualize the proces
         if axes is not None:
@@ -66,8 +76,8 @@ class Spectrum:
 
             axes[1].legend()
 
-        # (Optional) Calculating the tollerance (i.e. the difference )
-        if output_tollerance:
+        # (Optional) Calculating the the difference from the expected value
+        if output_difference:
             tollerances = np.abs(np.abs(candidate_pairs[:, 0] - candidate_pairs[:, 1]) - expected_peak_diff)
             candidate_pairs = np.column_stack((candidate_pairs, tollerances))
 
