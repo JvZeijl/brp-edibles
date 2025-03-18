@@ -1,50 +1,82 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from tqdm import tqdm
-import os, os.path as path
+from scipy.signal import find_peaks
 
-from dirs import DATA_FOLDER, OUTPUT_FOLDER
+from atomic_lines import AtomicLine
 
 class Spectrum:
-    def __init__(self, target, wavelength=None, flux=None):
+    def __init__(self, target, wavelength, flux):
         self.target = target
-
-        if wavelength is None or flux is None:
-            wavelength, flux = self._read_spectrum()
-        
         self.wavelength = wavelength
         self.flux = flux
-
-    def _read_spectrum(self):
-        wavelength = []
-        flux = []
-
-        for dir_entry in tqdm(os.listdir(path.join(DATA_FOLDER, self.target)), f'Reading data for target {self.target}'):
-            entry_path = path.join(DATA_FOLDER, self.target, dir_entry)
-
-            # Ignore directories and hidden files
-            if not path.isfile(entry_path) or dir_entry.startswith('.'):
-                continue
-
-            # Check for the right file format
-            if not dir_entry.endswith('.ascii'):
-                print(f'[WARNING]: not a valid data file {dir_entry}')
-                continue
-
-            spectrum = np.loadtxt(entry_path, unpack=True)
-            wavelength.append(spectrum[0])
-            flux.append(spectrum[1])
-
-        # Sort based on the wavelength
-        wavelength = np.concatenate(wavelength)
-        flux = np.concatenate(flux)
-        sorted_indices = np.argsort(wavelength)
-
-        return wavelength[sorted_indices], flux[sorted_indices]
     
-    def plot(self, ax: plt.Axes):
+    def plot(self, ax: plt.Axes, title: str = None, x_label: str = None, y_label: str = None):
         ax.plot(self.wavelength, self.flux, '.', ms=2)
-        ax.set_title(self.target)
-        ax.set_xlabel('Wavelength [Å]')
-        ax.set_ylabel('Flux')
-        
+        ax.set_title(title or self.target)
+        ax.set_xlabel(x_label or 'Wavelength [Å]')
+        ax.set_ylabel(y_label or 'Flux')
+    
+    def identify_atomic_line(
+        self,
+        line1: AtomicLine,
+        line2: AtomicLine,
+        search_window = (10, 10),
+        tollerance = 1,
+        axes: tuple[plt.Axes, plt.Axes] = None,
+        draw_expected = False,
+        output_radial_velocity = False,
+        output_tollerance = False
+    ) -> np.ndarray:
+        # Preparing expected wavelength information
+        min_wvl, max_wvl = np.sort([line1.wavelength, line2.wavelength])
+        expected_peak_diff = max_wvl - min_wvl
+
+        # Finding the peaks in the selected range
+        range_mask = (self.wavelength > min_wvl - search_window[0]) & (self.wavelength < max_wvl + search_window[1])
+        wavelength = self.wavelength[range_mask]
+        flux = self.flux[range_mask]
+        peaks, _ = find_peaks(-flux, height=-0.99, prominence=0.01)
+
+        # Calculate the difference between all peaks using a matrix
+        peaks_wvl = wavelength[peaks]
+        peaks_wvl_matrix = np.reshape(peaks_wvl, (-1, 1))
+        peaks_diff_matrix = peaks_wvl_matrix - peaks_wvl_matrix.transpose()
+        diff_from_expectation = np.abs(peaks_diff_matrix - expected_peak_diff)
+        candidate_pairs = peaks_wvl[np.argwhere(diff_from_expectation < tollerance)]
+
+        # (Optional) Visualize the proces
+        if axes is not None:
+            unique_candidates = np.unique(candidate_pairs)
+
+            axes[0].axvline(min_wvl - search_window[0], color='black')
+            axes[0].axvline(max_wvl + search_window[1], color='black')
+            axes[1].set_xlim(min_wvl - search_window[0], max_wvl + search_window[1])
+
+            for ax, title in zip(axes, ('Full spectrum', 'Search window')):
+                self.plot(ax, title)
+                ax.plot(
+                    unique_candidates, # Wavelength
+                    self.flux[np.isin(self.wavelength, unique_candidates)],
+                    '.', ms=10, color='green', label='Line detection'
+                )
+
+                if draw_expected:
+                    ax.axvline(line1.wavelength, linestyle='--', color='orange', label=fr'{line1.label}: $\lambda=${line1.wavelength} Å')
+                    ax.axvline(line2.wavelength, linestyle='--', color='red', label=fr'{line2.label}: $\lambda=${line2.wavelength} Å')
+
+            axes[1].legend()
+
+        # (Optional) Calculating the tollerance (i.e. the difference )
+        if output_tollerance:
+            tollerances = np.abs(np.abs(candidate_pairs[:, 0] - candidate_pairs[:, 1]) - expected_peak_diff)
+            candidate_pairs = np.column_stack((candidate_pairs, tollerances))
+
+        # (Optional) Calculating the radial velocity
+        if output_radial_velocity:
+            # The choice for np.min or np.max (i.e. using the lower or higher wavelength) is abitrary
+            # as long as it is consistent for the observed and expected wavelengths
+            lower_identified_wvls = np.min(candidate_pairs[:, (0, 1)], axis=1)
+            radial_velocities = (lower_identified_wvls - min_wvl) / min_wvl * 2.997e5
+            candidate_pairs = np.column_stack((candidate_pairs, radial_velocities))
+
+        return candidate_pairs
