@@ -17,8 +17,8 @@ NA_I_LINES = [
 ]
 
 K_I_LINES = [
-    # AtomicLine('K I', 7664.8991),
-    # AtomicLine('K I', 7698.9645)
+    AtomicLine('K I', 7664.8991),
+    AtomicLine('K I', 7698.9645),
     AtomicLine('K I', 5801.75),
     AtomicLine('K I', 5812.15)
 ]

@@ -1,3 +1,4 @@
+from typing import Self
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
@@ -9,7 +10,7 @@ class Spectrum:
         self.target = target
         self.wavelength = wavelength
         self.flux = flux
-    
+
     def plot(self, ax: plt.Axes, title: str = None, x_label: str = None, y_label: str = None):
         ax.plot(self.wavelength, self.flux, '.', ms=2)
         ax.set_title(title or self.target)
@@ -90,3 +91,20 @@ class Spectrum:
             candidate_pairs = np.column_stack((candidate_pairs, radial_velocities))
 
         return candidate_pairs
+    
+    def normalize(self, order_polynomial = 1, ax: plt.Axes = None) -> Self:
+        polynomial_coeff = np.polyfit(self.wavelength, self.flux, order_polynomial)
+        continuum_fn = np.poly1d(polynomial_coeff)
+        continuum = continuum_fn(self.wavelength)
+
+        distance_from_continuum = np.abs(self.flux - continuum)
+        
+
+        # (Optional) Visualize the proces
+        if ax is not None:
+            # self.plot(ax)
+            ax.plot(self.wavelength, self.flux / continuum, '.', ms=2, label='Continuum')
+            ax.legend()
+
+        return Spectrum(self.target, self.wavelength, self.flux / continuum)
+

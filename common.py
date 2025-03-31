@@ -25,3 +25,10 @@ def list_files(dir_path: str) -> list[str]:
             # Ignore directories and hidden files
             if path.isfile(path.join(dir_path, entry)) and not entry.startswith('.')
     ]
+
+def list_directories(dir_path: str) -> list[str]:
+    return [
+        path.join(dir_path, entry) for entry in os.listdir(dir_path)
+            # Ignore files and hidden directories
+            if path.isdir(path.join(dir_path, entry)) and not entry.startswith('.')
+    ]
