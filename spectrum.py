@@ -2,11 +2,15 @@ from typing import Self
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
+from sklearn.metrics import root_mean_squared_error
+from astropy.io import fits
+from astropy import constants as cst, units as u
+import warnings
 
 from atomic_lines import AtomicLine
 
 class Spectrum:
-    def __init__(self, target, wavelength, flux):
+    def __init__(self, target: str, wavelength: np.ndarray, flux: np.ndarray):
         self.target = target
         self.wavelength = wavelength
         self.flux = flux
@@ -16,7 +20,7 @@ class Spectrum:
         ax.set_title(title or self.target)
         ax.set_xlabel(x_label or 'Wavelength [Å]')
         ax.set_ylabel(y_label or 'Flux')
-    
+
     def identify_atomic_line(
         self,
         line1: AtomicLine,
@@ -92,19 +96,79 @@ class Spectrum:
 
         return candidate_pairs
     
-    def normalize(self, order_polynomial = 1, ax: plt.Axes = None) -> Self:
-        polynomial_coeff = np.polyfit(self.wavelength, self.flux, order_polynomial)
-        continuum_fn = np.poly1d(polynomial_coeff)
-        continuum = continuum_fn(self.wavelength)
+    def remove_outliers(self, ax: plt.Axes = None):
+        # Remove points that are very low
+        low_points = self.flux <= 0.1
+        deleted_wvl_low = self.wavelength[low_points]
+        deleted_flux_low = self.flux[low_points]
 
-        distance_from_continuum = np.abs(self.flux - continuum)
-        
+        self.wavelength = self.wavelength[~low_points]
+        self.flux = self.flux[~low_points]
 
         # (Optional) Visualize the proces
         if ax is not None:
-            # self.plot(ax)
-            ax.plot(self.wavelength, self.flux / continuum, '.', ms=2, label='Continuum')
+            ax.plot(self.wavelength, self.flux, '.', ms=2)
+            ax.plot(deleted_wvl_low, deleted_flux_low, '.', color='red', ms=2)
+
+        return deleted_wvl_low, deleted_flux_low
+
+
+    def normalize(self, degree: int = None, max_degree = 6, return_degree = False, ax: plt.Axes = None):
+        # (Optional) Calculate the polynomial degree that fits the best on the spectrum
+        if degree is None:
+            # Ignore warnings for a degree that is too high, because that is what is being tested here
+            warnings.simplefilter('ignore', np.RankWarning)
+
+            # Find a polynomial degree that fits the best
+            degs = np.arange(max_degree + 1)
+            rmse = [
+                root_mean_squared_error(
+                    self.flux, # Observed
+                    np.poly1d( # Continuum fit
+                        np.polyfit(self.wavelength, self.flux, deg) # Polynamial coefficients
+                    )(self.wavelength)
+                ) for deg in degs
+            ]
+
+            degree = degs[np.argmin(rmse)]
+
+        continuum = np.poly1d(np.polyfit(self.wavelength, self.flux, deg=degree))(self.wavelength)
+
+        # (Optional) Visualize the proces
+        if ax is not None:
+            ax.plot(self.wavelength, self.flux, '.', ms=2)
+            ax.plot(self.wavelength, continuum, label=f'Continuum (degree {degree})')
             ax.legend()
 
-        return Spectrum(self.target, self.wavelength, self.flux / continuum)
+        # Divide out the continuum
+        self.flux /= continuum
 
+        # (Optional) Return the polynomial degree of the continuum
+        if return_degree:
+            return degree
+
+class FitsSpectrum(Spectrum):
+    def __init__(self, fits_file: str):
+        # Open fits file
+        hdulist = fits.open(fits_file)
+        header = hdulist[0].header
+
+        # Load data
+        starting_wvl = header['CRVAL1']
+        stepsize_wvl = header['CDELT1']
+        flux = hdulist[0].data
+        wavelength = np.arange(0, len(flux), 1) * stepsize_wvl + starting_wvl
+
+        # Create instance
+        super().__init__(header['OBJECT'], wavelength, flux)
+
+        self.obs_date = header["DATE-OBS"]
+        self.v_rad = header["HIERARCH ESO QC VRAD BARYCOR"] * u.km / u.s
+
+    def plot(self, ax: plt.Axes, title: str = None, x_label: str = None, y_label: str = None):
+        return super().plot(ax, title or f'{self.target} | {self.obs_date}', x_label, y_label)
+    
+    def correct_shift(self):
+        # TODO: determine if identify_atomic_lines should be used here
+
+        self.wavelength += (self.v_rad / cst.c.to('km/s')) * self.wavelength
