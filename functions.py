@@ -104,6 +104,11 @@ def dib_finder(wavelength,spectrum,locs,wave_range,threshold=None,promin=0.03,in
             centra_list=[]
             for dib in range(len(locs)):
                 dib_wavelength,dib_spectrum=query(wavelength,spectrum,ref_wavelengths[locs[dib]],wave_range)
+
+                # Ignore the DIB if it is not in the spectrum
+                if len(dib_wavelength) == 0 or len(dib_spectrum) == 0:
+                    continue
+
                 dib_wavelengths.append(dib_wavelength)
                 dib_spectra.append(dib_spectrum)
                 centra_list.append(wavelength[locs[dib]])

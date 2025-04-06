@@ -117,7 +117,7 @@ class Spectrum:
         # (Optional) Calculate the polynomial degree that fits the best on the spectrum
         if degree is None:
             # Ignore warnings for a degree that is too high, because that is what is being tested here
-            warnings.simplefilter('ignore', np.RankWarning)
+            warnings.simplefilter('ignore', np.exceptions.RankWarning)
 
             # Find a polynomial degree that fits the best
             degs = np.arange(max_degree + 1)
