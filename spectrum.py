@@ -6,7 +6,10 @@ from sklearn.metrics import root_mean_squared_error
 from astropy.io import fits
 from astropy import constants as cst, units as u
 import warnings
+from scipy.optimize import curve_fit
+from scipy.integrate import simpson
 
+from models import skewed_gauss, double_gaussian
 from atomic_lines import AtomicLine
 
 class Spectrum:
@@ -146,6 +149,44 @@ class Spectrum:
         # (Optional) Return the polynomial degree of the continuum
         if return_degree:
             return degree
+        
+    def select_dib(self, center_wavelength: float, search_window: tuple[float, float] = (5, 5), ax: plt.Axes = None):
+        # Select window
+        range_mask = (self.wavelength > center_wavelength - search_window[0]) & (self.wavelength < center_wavelength + search_window[1])
+        wavelength = self.wavelength[range_mask]
+        flux = self.flux[range_mask]
+
+        init_width = 0.1
+        init_amplitude = 0.1
+        init_skew = 2
+        init_slope = (flux[0] - flux[-1]) / (wavelength[0] - wavelength[-1])
+        params = None
+
+        try:
+            params, _ = curve_fit(skewed_gauss, wavelength, flux, p0=[center_wavelength, init_width, init_amplitude, init_skew, init_slope, flux[0]], maxfev=10000, bounds=np.array((
+                [center_wavelength-0.5,-np.inf,-np.inf,-np.inf, -np.inf, -np.inf],
+                [center_wavelength+0.5, np.inf, np.inf, np.inf,  np.inf,  np.inf]
+            )))
+        except RuntimeError:
+            return None
+
+        prediction = skewed_gauss(wavelength, *params)
+        rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
+        is_double = False
+
+        continuum = params[4] * wavelength + params[5]
+        fwhm = 2 * np.sqrt(2 * np.log(2)) * params[1]
+        ew = simpson(1 - prediction / continuum, wavelength)
+
+        # (Optional) Visualize the proces
+        if ax is not None:
+            # print(params)
+            ax.set_title(rf'$\lambda={params[0]:.4g}$; RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
+            ax.plot(wavelength, flux, '.', ms=2)
+            ax.plot(wavelength, prediction, label=f'Gaussian fit')
+
+        return prediction, params, rmse, fwhm, ew, is_double
+        
 
 class FitsSpectrum(Spectrum):
     def __init__(self, fits_file: str):
@@ -172,3 +213,9 @@ class FitsSpectrum(Spectrum):
         # TODO: determine if identify_atomic_lines should be used here
 
         self.wavelength += (self.v_rad / cst.c.to('km/s')) * self.wavelength
+
+class DibProfile(Spectrum):
+    def __init__(self, target: str, wavelength: np.ndarray, flux: np.ndarray, center_wavelength: float):
+        super().__init__(target, wavelength, flux)
+
+        self.center_wavelength = center_wavelength
