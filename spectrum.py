@@ -8,6 +8,7 @@ from astropy import constants as cst, units as u
 import warnings
 from scipy.optimize import curve_fit
 from scipy.integrate import simpson
+from datetime import datetime
 
 from models import skewed_gauss, double_gaussian
 from atomic_lines import AtomicLine
@@ -23,6 +24,9 @@ class Spectrum:
         ax.set_title(title or self.target)
         ax.set_xlabel(x_label or 'Wavelength [Å]')
         ax.set_ylabel(y_label or 'Flux')
+
+    def format_obs_date(self):
+        return 'unknown'
 
     def identify_atomic_line(
         self,
@@ -115,7 +119,10 @@ class Spectrum:
 
         return deleted_wvl_low, deleted_flux_low
 
-    def continuum(self, degree: int = None, max_degree = 6, ax: plt.Axes = None):
+    def continuum(self, degree: int = None, max_degree = 6, ax: plt.Axes = None, wavelength = None, flux = None):
+        wavelength = self.wavelength if wavelength is None else wavelength
+        flux = self.flux if flux is None else flux
+
         # (Optional) Calculate the polynomial degree that fits the best on the spectrum
         if degree is None:
             # Ignore warnings for a degree that is too high, because that is what is being tested here
@@ -125,21 +132,21 @@ class Spectrum:
             degs = np.arange(max_degree + 1)
             rmse = [
                 root_mean_squared_error(
-                    self.flux, # Observed
+                    flux, # Observed
                     np.poly1d( # Continuum fit
-                        np.polyfit(self.wavelength, self.flux, deg) # Polynamial coefficients
-                    )(self.wavelength)
+                        np.polyfit(wavelength, flux, deg) # Polynamial coefficients
+                    )(wavelength)
                 ) for deg in degs
             ]
 
             degree = degs[np.argmin(rmse)]
 
-        continuum = np.poly1d(np.polyfit(self.wavelength, self.flux, deg=degree))(self.wavelength)
+        continuum = np.poly1d(np.polyfit(wavelength, flux, deg=degree))(wavelength)
 
         # (Optional) Visualize the proces
         if ax is not None:
-            ax.plot(self.wavelength, self.flux, '.', ms=2)
-            ax.plot(self.wavelength, continuum, label=f'Continuum (degree {degree})')
+            ax.plot(wavelength, flux, '.', ms=2)
+            ax.plot(wavelength, continuum, label=f'Continuum (degree {degree})')
             ax.legend()
 
         return continuum
@@ -154,49 +161,116 @@ class Spectrum:
         wavelength = self.wavelength[range_mask]
         flux = self.flux[range_mask]
 
-        def fit_single_gaussian(init_center = center_wavelength, init_width = 0.1, init_amplitude = 0.1, init_skew = 2, init_slope = (flux[0] - flux[-1]) / (wavelength[0] - wavelength[-1]), init_start = flux[0]):
-            params = None
+        def fit_n_gaussians(n_gaussians, init_centers = None):
+            # Ignore overflow errors during fitting
+            warnings.simplefilter('ignore', RuntimeWarning)
 
+            # Setup fit parameters and bounds
+            n_params = 4
+
+            init_width = 0.1
+            init_amplitude = 0.1
+            init_skew = 2
+            init_params = np.repeat([[center_wavelength, init_width, init_amplitude, init_skew]], n_gaussians, axis=0)
+
+            center_bound_range = 0.01
+            lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0, 0, -np.inf]], n_gaussians, axis=0)
+            upper_bounds = np.repeat([[center_wavelength + center_bound_range,  np.inf,  np.inf,  np.inf]], n_gaussians, axis=0)
+
+            if init_centers is not None:
+                assert len(init_centers) == n_gaussians, f'the length of init_centers ({len(init_centers)}) must be the same as n_gaussians ({n_gaussians})'
+
+                init_params[:, 0] = init_centers
+                lower_bounds[:, 0] = init_centers - center_bound_range
+                upper_bounds[:, 0] = init_centers + center_bound_range
+
+            # Determine continuum
+            mean_start_wvl, mean_start_flux = np.mean(wavelength[:3]), np.mean(flux[:3])
+            mean_end_wvl, mean_end_flux = np.mean(wavelength[-2:]), np.mean(flux[-2:])
+            slope = (mean_start_flux - mean_end_flux) / (mean_start_wvl - mean_end_wvl)
+            start = mean_start_flux - slope * mean_start_wvl
+
+            def model(wvl, *params_list_flat):
+                params_list = np.reshape(params_list_flat, (-1, n_params))
+                continuum = slope * wvl + start
+                n_gaussian = np.sum([skewed_gauss(wvl, *params, c=0) for params in params_list], axis=0)
+
+                return continuum + n_gaussian
+            
             try:
                 params, _ = curve_fit(
-                    skewed_gauss, wavelength, flux, p0=[init_center, init_width, init_amplitude, init_skew, init_slope, init_start], maxfev=10000, bounds=np.array((
-                    [init_center-0.01,-np.inf,-np.inf,-np.inf, -np.inf, -np.inf],
-                    [init_center+0.01, np.inf, np.inf, np.inf,  np.inf,  np.inf]
-                )))
+                    model, wavelength, flux, maxfev=10_000,
+                    p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten())
+                )
 
-                center, width, amplitude, skew, slope, start = params
-                prediction = skewed_gauss(wavelength, *params)
+                params = np.reshape(params, (-1, n_params))
+                prediction = model(wavelength, *params)
                 continuum = slope * wavelength + start
                 rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
                 return params, prediction, continuum, rmse
+
             except RuntimeError:
                 return None
-            
-        params, prediction, continuum, rmse = fit_single_gaussian()
-        center, width, amplitude, skew, slope, start = params
 
-        window_min = wavelength[np.argmin(prediction)] - 5 * width
-        window_max = wavelength[np.argmin(prediction)] + 5 * width
+        # Fit a single gaussian to narrow the window
+        single_gauss_params, single_gauss_prediction, *_ = fit_n_gaussians(1)
+        width = single_gauss_params[:, 1]
+
+        # Select 5 sigma around the lowest point
+        window_min = wavelength[np.argmin(single_gauss_prediction)] - 5 * width
+        window_max = wavelength[np.argmin(single_gauss_prediction)] + 5 * width
         range_mask = (self.wavelength > window_min) & (self.wavelength < window_max)
         wavelength = self.wavelength[range_mask]
         flux = self.flux[range_mask]
 
-        params, prediction, continuum, rmse = fit_single_gaussian(*params)
-        center, width, amplitude, skew, slope, start = params
+        # Fit a n-Gaussian
+        amount_of_gaussians = np.array([1, 2, 3])
+        params_per_gauss = []
+        prediction_per_gauss = []
+        continuum_per_gauss = []
+        rmse_per_gauss = []
 
-        fwhm = 2 * np.sqrt(2 * np.log(2)) * width
-        ew = simpson(1 - prediction / continuum, wavelength)
+        # Fit for different amount of gaussians
+        for n in amount_of_gaussians:
+            result = fit_n_gaussians(n)
+
+            if result is None:
+                print(f'[WARNING]: error when fitting {n} gaussians for lambda {center_wavelength}')
+                continue
+
+            params_per_gauss.append(result[0])
+            prediction_per_gauss.append(result[1])
+            continuum_per_gauss.append(result[2])
+            rmse_per_gauss.append(result[3])
+
+        params_per_gauss = np.array(params_per_gauss, dtype=object)
+        prediction_per_gauss = np.array(prediction_per_gauss)
+        continuum_per_gauss = np.array(continuum_per_gauss)
+        rmse_per_gauss = np.array(rmse_per_gauss)
+
+        # Gaussian properties
+        # centers = [np.mean(params[:, 0], axis=0) for params in params_per_gauss]
+        widths = np.array([np.max(params[:, 1], axis=0) for params in params_per_gauss])
+        fwhms = 2 * np.sqrt(2 * np.log(2)) * widths
+        ews = np.array([simpson(1 - pred / cont, wavelength) for pred, cont in zip(prediction_per_gauss, continuum_per_gauss)])
 
         # (Optional) Visualize the proces
         if ax is not None:
-            # print(params)
-            ax.set_title(rf'$\lambda={center:.4g}$; RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
-            ax.plot(wavelength, flux, '.', ms=2)
-            ax.plot(wavelength, prediction, label=f'Gaussian fit')
-            ax.axvline(window_min)
-            ax.axvline(window_max)
+            ax.set_title(rf'{self.target} | {self.format_obs_date()}')
+            ax.set_xlabel('Wavelength [$\\AA$]')
+            ax.set_ylabel('Normalized flux + Offset')
 
-        return prediction, params, rmse, fwhm, ew, False
+            for idx, (pred, n, rmserr, continuum, fwhm, ew) in enumerate(zip(prediction_per_gauss, amount_of_gaussians, rmse_per_gauss, continuum_per_gauss, fwhms, ews)):
+                height_diff = continuum[np.argmin(flux)] - np.min(flux)
+                offset = idx * height_diff
+
+                ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
+                ax.plot(wavelength, pred + offset, color=f'C{idx + 1}', label=rf'RMSE={rmserr:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
+                ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit', color=f'C{idx + 1}')
+                
+            ax.legend()
+
+        # return prediction, params, rmse
         
 
 class FitsSpectrum(Spectrum):
@@ -214,11 +288,14 @@ class FitsSpectrum(Spectrum):
         # Create instance
         super().__init__(header['OBJECT'], wavelength, flux)
 
-        self.obs_date = header["DATE-OBS"]
+        self.obs_date = datetime.fromisoformat(header["DATE-OBS"])
         self.v_rad = header["HIERARCH ESO QC VRAD BARYCOR"] * u.km / u.s
 
     def plot(self, ax: plt.Axes, title: str = None, x_label: str = None, y_label: str = None):
         return super().plot(ax, title or f'{self.target} | {self.obs_date}', x_label, y_label)
+    
+    def format_obs_date(self):
+        return self.obs_date.strftime(r'%d-%m-%Y, %H:%M:%S')
     
     def correct_shift(self):
         # TODO: determine if identify_atomic_lines should be used here
