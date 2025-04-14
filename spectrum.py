@@ -115,8 +115,7 @@ class Spectrum:
 
         return deleted_wvl_low, deleted_flux_low
 
-
-    def normalize(self, degree: int = None, max_degree = 6, return_degree = False, ax: plt.Axes = None):
+    def continuum(self, degree: int = None, max_degree = 6, ax: plt.Axes = None):
         # (Optional) Calculate the polynomial degree that fits the best on the spectrum
         if degree is None:
             # Ignore warnings for a degree that is too high, because that is what is being tested here
@@ -143,49 +142,61 @@ class Spectrum:
             ax.plot(self.wavelength, continuum, label=f'Continuum (degree {degree})')
             ax.legend()
 
-        # Divide out the continuum
-        self.flux /= continuum
+        return continuum
 
-        # (Optional) Return the polynomial degree of the continuum
-        if return_degree:
-            return degree
+    def normalize(self, degree: int = None, max_degree = 6, ax: plt.Axes = None):
+        # Divide out the continuum
+        self.flux /= self.continuum(degree, max_degree, ax)
         
-    def select_dib(self, center_wavelength: float, search_window: tuple[float, float] = (5, 5), ax: plt.Axes = None):
+    def select_dib(self, center_wavelength: float, search_window: tuple[float, float] = (10, 10), ax: plt.Axes = None):
         # Select window
         range_mask = (self.wavelength > center_wavelength - search_window[0]) & (self.wavelength < center_wavelength + search_window[1])
         wavelength = self.wavelength[range_mask]
         flux = self.flux[range_mask]
 
-        init_width = 0.1
-        init_amplitude = 0.1
-        init_skew = 2
-        init_slope = (flux[0] - flux[-1]) / (wavelength[0] - wavelength[-1])
-        params = None
+        def fit_single_gaussian(init_center = center_wavelength, init_width = 0.1, init_amplitude = 0.1, init_skew = 2, init_slope = (flux[0] - flux[-1]) / (wavelength[0] - wavelength[-1]), init_start = flux[0]):
+            params = None
 
-        try:
-            params, _ = curve_fit(skewed_gauss, wavelength, flux, p0=[center_wavelength, init_width, init_amplitude, init_skew, init_slope, flux[0]], maxfev=10000, bounds=np.array((
-                [center_wavelength-0.5,-np.inf,-np.inf,-np.inf, -np.inf, -np.inf],
-                [center_wavelength+0.5, np.inf, np.inf, np.inf,  np.inf,  np.inf]
-            )))
-        except RuntimeError:
-            return None
+            try:
+                params, _ = curve_fit(
+                    skewed_gauss, wavelength, flux, p0=[init_center, init_width, init_amplitude, init_skew, init_slope, init_start], maxfev=10000, bounds=np.array((
+                    [init_center-0.01,-np.inf,-np.inf,-np.inf, -np.inf, -np.inf],
+                    [init_center+0.01, np.inf, np.inf, np.inf,  np.inf,  np.inf]
+                )))
 
-        prediction = skewed_gauss(wavelength, *params)
-        rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
-        is_double = False
+                center, width, amplitude, skew, slope, start = params
+                prediction = skewed_gauss(wavelength, *params)
+                continuum = slope * wavelength + start
+                rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
+                return params, prediction, continuum, rmse
+            except RuntimeError:
+                return None
+            
+        params, prediction, continuum, rmse = fit_single_gaussian()
+        center, width, amplitude, skew, slope, start = params
 
-        continuum = params[4] * wavelength + params[5]
-        fwhm = 2 * np.sqrt(2 * np.log(2)) * params[1]
+        window_min = wavelength[np.argmin(prediction)] - 5 * width
+        window_max = wavelength[np.argmin(prediction)] + 5 * width
+        range_mask = (self.wavelength > window_min) & (self.wavelength < window_max)
+        wavelength = self.wavelength[range_mask]
+        flux = self.flux[range_mask]
+
+        params, prediction, continuum, rmse = fit_single_gaussian(*params)
+        center, width, amplitude, skew, slope, start = params
+
+        fwhm = 2 * np.sqrt(2 * np.log(2)) * width
         ew = simpson(1 - prediction / continuum, wavelength)
 
         # (Optional) Visualize the proces
         if ax is not None:
             # print(params)
-            ax.set_title(rf'$\lambda={params[0]:.4g}$; RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
+            ax.set_title(rf'$\lambda={center:.4g}$; RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
             ax.plot(wavelength, flux, '.', ms=2)
             ax.plot(wavelength, prediction, label=f'Gaussian fit')
+            ax.axvline(window_min)
+            ax.axvline(window_max)
 
-        return prediction, params, rmse, fwhm, ew, is_double
+        return prediction, params, rmse, fwhm, ew, False
         
 
 class FitsSpectrum(Spectrum):
