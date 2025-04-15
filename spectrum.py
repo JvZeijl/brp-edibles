@@ -6,7 +6,7 @@ from sklearn.metrics import root_mean_squared_error
 from astropy.io import fits
 from astropy import constants as cst, units as u
 import warnings
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, OptimizeWarning
 from scipy.integrate import simpson
 from datetime import datetime
 
@@ -164,6 +164,7 @@ class Spectrum:
         def fit_n_gaussians(n_gaussians, init_centers = None):
             # Ignore overflow errors during fitting
             warnings.simplefilter('ignore', RuntimeWarning)
+            warnings.simplefilter('ignore', OptimizeWarning)
 
             # Setup fit parameters and bounds
             n_params = 4
@@ -173,9 +174,9 @@ class Spectrum:
             init_skew = 2
             init_params = np.repeat([[center_wavelength, init_width, init_amplitude, init_skew]], n_gaussians, axis=0)
 
-            center_bound_range = 0.01
+            center_bound_range = 1
             lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0, 0, -np.inf]], n_gaussians, axis=0)
-            upper_bounds = np.repeat([[center_wavelength + center_bound_range,  np.inf,  np.inf,  np.inf]], n_gaussians, axis=0)
+            upper_bounds = np.repeat([[center_wavelength + center_bound_range, np.inf, np.inf, np.inf]], n_gaussians, axis=0)
 
             if init_centers is not None:
                 assert len(init_centers) == n_gaussians, f'the length of init_centers ({len(init_centers)}) must be the same as n_gaussians ({n_gaussians})'
@@ -209,12 +210,16 @@ class Spectrum:
                 rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
                 return params, prediction, continuum, rmse
 
-            except RuntimeError:
+            except:
                 return None
 
         # Fit a single gaussian to narrow the window
-        single_gauss_params, single_gauss_prediction, *_ = fit_n_gaussians(1)
+        single_gauss_params, single_gauss_prediction, _, single_gaussian_rmse = fit_n_gaussians(1)
         width = single_gauss_params[:, 1]
+
+        # Ignore bad DIB detections
+        if single_gaussian_rmse > 0.1:
+            return None
 
         # Select 5 sigma around the lowest point
         window_min = wavelength[np.argmin(single_gauss_prediction)] - 5 * width
@@ -235,13 +240,15 @@ class Spectrum:
             result = fit_n_gaussians(n)
 
             if result is None:
-                print(f'[WARNING]: error when fitting {n} gaussians for lambda {center_wavelength}')
                 continue
 
             params_per_gauss.append(result[0])
             prediction_per_gauss.append(result[1])
             continuum_per_gauss.append(result[2])
             rmse_per_gauss.append(result[3])
+
+        if len(params_per_gauss) == 0:
+            return None
 
         params_per_gauss = np.array(params_per_gauss, dtype=object)
         prediction_per_gauss = np.array(prediction_per_gauss)
@@ -270,7 +277,14 @@ class Spectrum:
                 
             ax.legend()
 
-        # return prediction, params, rmse
+        best_fit_mask = np.argmin(rmse_per_gauss)
+        best_params = params_per_gauss[best_fit_mask]
+        best_rmse = rmse_per_gauss[best_fit_mask]
+        best_fwhm = fwhms[best_fit_mask]
+        best_ews = ews[best_fit_mask]
+        best_n = amount_of_gaussians[best_fit_mask]
+
+        return best_params, best_rmse, best_fwhm, best_ews, best_n
         
 
 class FitsSpectrum(Spectrum):
