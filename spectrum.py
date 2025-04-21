@@ -10,7 +10,7 @@ from scipy.optimize import curve_fit, OptimizeWarning
 from scipy.integrate import simpson
 from datetime import datetime
 
-from models import skewed_gauss, double_gaussian
+from models import n_gaussian
 from atomic_lines import AtomicLine
 
 class Spectrum:
@@ -191,27 +191,20 @@ class Spectrum:
             slope = (mean_start_flux - mean_end_flux) / (mean_start_wvl - mean_end_wvl)
             start = mean_start_flux - slope * mean_start_wvl
 
-            def model(wvl, *params_list_flat):
-                params_list = np.reshape(params_list_flat, (-1, n_params))
+            def model(wvl, *params_list):
                 continuum = slope * wvl + start
-                n_gaussian = np.sum([skewed_gauss(wvl, *params, c=0) for params in params_list], axis=0)
-
-                return continuum + n_gaussian
+                return continuum + n_gaussian(wvl, *params_list)
             
-            try:
-                params, _ = curve_fit(
-                    model, wavelength, flux, maxfev=10_000,
-                    p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten())
-                )
+            params, _ = curve_fit(
+                model, wavelength, flux, maxfev=10_000,
+                p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten())
+            )
 
-                params = np.reshape(params, (-1, n_params))
-                prediction = model(wavelength, *params)
-                continuum = slope * wavelength + start
-                rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
-                return params, prediction, continuum, rmse
-
-            except:
-                return None
+            prediction = model(wavelength, *params)
+            params = np.reshape(params, (-1, n_params))
+            continuum = slope * wavelength + start
+            rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
+            return params, prediction, continuum, rmse
 
         # Fit a single gaussian to narrow the window
         single_gauss_params, single_gauss_prediction, _, single_gaussian_rmse = fit_n_gaussians(1)

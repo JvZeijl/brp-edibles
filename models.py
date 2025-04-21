@@ -13,3 +13,10 @@ def double_gaussian(wavelength,centre1,width1,amplitude1,skew1,centre2,width2,am
     gaussian=(exp_1+exp_2)
     continuum=((slope*wavelength)+c)
     return continuum-gaussian
+
+def n_gaussian(wavelength, *params_list):
+    assert len(params_list) % 4 == 0, f'The number of parameters ({len(params_list)}) must be a multiple of 4 parameters, in order: center, width, amplitude, skew'
+
+    gaussian_params = np.reshape(params_list, (-1, 4))
+    gaussians = [skewed_gauss(wavelength, *params, c=0) for params in gaussian_params]
+    return np.sum(gaussians, axis=0)
