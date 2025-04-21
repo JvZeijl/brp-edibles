@@ -1,10 +1,17 @@
 import numpy as np
-from spectrum import Spectrum
+from scipy.integrate import simpson
 
-class DibProfile(Spectrum):
-    def __init__(self, target, wavelength, flux):
-        super().__init__(target, wavelength, flux)
+class DibProfile:
+    def __init__(self, target, model, parameters):
+        self.target = target
+        self.model = model
+        self.parameters = parameters
 
-    def center(self, central_wavelength: float = None):
-        central_wavelength = central_wavelength or self.wavelength[np.argmin(self.flux)]
-        return DibProfile(self.target, self.wavelength - central_wavelength, self.flux, central_wavelength)
+    def predict(self, wavelength):
+        return self.model(wavelength, *self.parameters)
+    
+    def rmse(self, wavelength, flux_true):
+        return np.sqrt(np.sum((flux_true - self.predict(wavelength))**2) / flux_true.size)
+    
+    def equivalent_width(self, wavelength, continuum):
+        return simpson(1 - self.predict(wavelength) / continuum, wavelength)

@@ -10,6 +10,7 @@ from scipy.optimize import curve_fit, OptimizeWarning
 from scipy.integrate import simpson
 from datetime import datetime
 
+from dib_profile import DibProfile
 from models import n_gaussian
 from atomic_lines import AtomicLine
 
@@ -175,8 +176,6 @@ class Spectrum:
             warnings.simplefilter('ignore', OptimizeWarning)
 
             # Setup fit parameters and bounds
-            n_params = 4
-
             init_width = 0.1
             init_amplitude = 0.1
             init_skew = 2
@@ -196,64 +195,53 @@ class Spectrum:
             def model(wvl, *params_list):
                 return continuum + n_gaussian(wvl, *params_list)
             
-            params, _ = curve_fit(
-                model, wavelength, flux, maxfev=10_000,
-                p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten())
-            )
+            try:
+                params, _ = curve_fit(
+                    model, wavelength, flux, maxfev=10_000,
+                    p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten())
+                )
 
-            prediction = model(wavelength, *params)
-            params = np.reshape(params, (-1, n_params))
-            rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
-            return params, prediction, rmse
+                return DibProfile(self.target, model, params)
+            except:
+                return None
 
         # Fit a single gaussian to narrow the window
         wavelength, flux, continuum = select_window(
             (self.wavelength > center_wavelength - search_window[0]) & (self.wavelength < center_wavelength + search_window[1])
         )
 
-        single_gauss_params, single_gauss_prediction, single_gaussian_rmse = fit_n_gaussians(1)
+        single_gauss_profile = fit_n_gaussians(1)
+
+        if single_gauss_profile is None:
+            return None
+
+        single_gauss_prediction = single_gauss_profile.predict(wavelength)
+        single_gaussian_rmse = single_gauss_profile.rmse(wavelength, flux)
 
         # Ignore bad DIB detections
         if single_gaussian_rmse > 0.1:
             return None
 
         # Narrow the window: select 5 sigma around the lowest point
-        width = single_gauss_params[:, 1]
+        width = single_gauss_profile.parameters[1] # parameters: [center, width, amplitude, skew]
         window_min = wavelength[np.argmin(single_gauss_prediction)] - 5 * width
         window_max = wavelength[np.argmin(single_gauss_prediction)] + 5 * width
         wavelength, flux, continuum = select_window(
             (self.wavelength > window_min) & (self.wavelength < window_max)
         )
 
-        # Fit a n-Gaussian
-        amount_of_gaussians = np.array([1, 2, 3])
-        params_per_gauss = []
-        prediction_per_gauss = []
-        rmse_per_gauss = []
-
         # Fit for different amount of gaussians
-        for n in amount_of_gaussians:
-            result = fit_n_gaussians(n)
+        amount_of_gaussians = np.array([1, 2, 3])
+        dib_profiles = np.array([profile for n in amount_of_gaussians if (profile := fit_n_gaussians(n)) is not None], dtype=object)
 
-            if result is None:
-                continue
-
-            params_per_gauss.append(result[0])
-            prediction_per_gauss.append(result[1])
-            rmse_per_gauss.append(result[2])
-
-        if len(params_per_gauss) == 0:
+        if len(dib_profiles) == 0:
             return None
 
-        params_per_gauss = np.array(params_per_gauss, dtype=object)
-        prediction_per_gauss = np.array(prediction_per_gauss)
-        rmse_per_gauss = np.array(rmse_per_gauss)
-
-        # Gaussian properties
-        # centers = [np.mean(params[:, 0], axis=0) for params in params_per_gauss]
-        widths = np.array([np.max(params[:, 1], axis=0) for params in params_per_gauss])
-        fwhms = 2 * np.sqrt(2 * np.log(2)) * widths
-        ews = np.array([simpson(1 - pred / continuum, wavelength) for pred in prediction_per_gauss])
+        rmses = np.array([profile.rmse(wavelength, flux) for profile in dib_profiles])
+        params = np.array([np.reshape(profile.parameters, (-1, 4)) for profile in dib_profiles], dtype=object)
+        max_widths = np.array([np.max(param[:, 1], axis=0) for param in params])
+        fwhms = 2 * np.sqrt(2 * np.log(2)) * max_widths
+        ews = np.array([profile.equivalent_width(wavelength, continuum) for profile in dib_profiles])
 
         # (Optional) Visualize the proces
         if ax is not None:
@@ -261,24 +249,23 @@ class Spectrum:
             ax.set_xlabel('Wavelength [$\\AA$]')
             ax.set_ylabel('Normalized flux + Offset')
 
-            for idx, (pred, n, rmserr, fwhm, ew) in enumerate(zip(prediction_per_gauss, amount_of_gaussians, rmse_per_gauss, fwhms, ews)):
+            for idx, (n, profile, rmse, fwhm, ew) in enumerate(zip(amount_of_gaussians, dib_profiles, rmses, fwhms, ews)):
                 height_diff = continuum[np.argmin(flux)] - np.min(flux)
                 offset = idx * height_diff
 
                 ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
-                ax.plot(wavelength, pred + offset, color=f'C{idx + 1}', label=rf'RMSE={rmserr:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
+                ax.plot(wavelength, profile.predict(wavelength) + offset, color=f'C{idx + 1}', label=rf'RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
                 ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit', color=f'C{idx + 1}')
                 
             ax.legend()
 
-        best_fit_mask = np.argmin(rmse_per_gauss)
-        best_params = params_per_gauss[best_fit_mask]
-        best_rmse = rmse_per_gauss[best_fit_mask]
+        best_fit_mask = np.argmin(rmses)
+        best_profile = dib_profiles[best_fit_mask]
+        best_rmse = rmses[best_fit_mask]
         best_fwhm = fwhms[best_fit_mask]
         best_ews = ews[best_fit_mask]
-        best_n = amount_of_gaussians[best_fit_mask]
 
-        return best_params, best_rmse, best_fwhm, best_ews, best_n
+        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews
         
 
 class FitsSpectrum(Spectrum):
@@ -309,9 +296,3 @@ class FitsSpectrum(Spectrum):
         # TODO: determine if identify_atomic_lines should be used here
 
         self.wavelength += (self.v_rad / cst.c.to('km/s')) * self.wavelength
-
-class DibProfile(Spectrum):
-    def __init__(self, target: str, wavelength: np.ndarray, flux: np.ndarray, center_wavelength: float):
-        super().__init__(target, wavelength, flux)
-
-        self.center_wavelength = center_wavelength
