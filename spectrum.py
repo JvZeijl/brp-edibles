@@ -156,10 +156,18 @@ class Spectrum:
         self.flux /= self.continuum(degree, max_degree, ax)
         
     def select_dib(self, center_wavelength: float, search_window: tuple[float, float] = (10, 10), ax: plt.Axes = None):
-        # Select window
-        range_mask = (self.wavelength > center_wavelength - search_window[0]) & (self.wavelength < center_wavelength + search_window[1])
-        wavelength = self.wavelength[range_mask]
-        flux = self.flux[range_mask]
+        def select_window(range_mask):
+            wavelength = self.wavelength[range_mask]
+            flux = self.flux[range_mask]
+
+            # Determine continuum
+            mean_start_wvl, mean_start_flux = np.mean(wavelength[:3]), np.mean(flux[:3])
+            mean_end_wvl, mean_end_flux = np.mean(wavelength[-2:]), np.mean(flux[-2:])
+            slope = (mean_start_flux - mean_end_flux) / (mean_start_wvl - mean_end_wvl)
+            start = mean_start_flux - slope * mean_start_wvl
+            continuum = slope * wavelength + start
+
+            return wavelength, flux, continuum
 
         def fit_n_gaussians(n_gaussians, init_centers = None):
             # Ignore overflow errors during fitting
@@ -185,14 +193,7 @@ class Spectrum:
                 lower_bounds[:, 0] = init_centers - center_bound_range
                 upper_bounds[:, 0] = init_centers + center_bound_range
 
-            # Determine continuum
-            mean_start_wvl, mean_start_flux = np.mean(wavelength[:3]), np.mean(flux[:3])
-            mean_end_wvl, mean_end_flux = np.mean(wavelength[-2:]), np.mean(flux[-2:])
-            slope = (mean_start_flux - mean_end_flux) / (mean_start_wvl - mean_end_wvl)
-            start = mean_start_flux - slope * mean_start_wvl
-
             def model(wvl, *params_list):
-                continuum = slope * wvl + start
                 return continuum + n_gaussian(wvl, *params_list)
             
             params, _ = curve_fit(
@@ -202,30 +203,32 @@ class Spectrum:
 
             prediction = model(wavelength, *params)
             params = np.reshape(params, (-1, n_params))
-            continuum = slope * wavelength + start
             rmse = np.sqrt(np.sum((flux - prediction)**2) / flux.size)
-            return params, prediction, continuum, rmse
+            return params, prediction, rmse
 
         # Fit a single gaussian to narrow the window
-        single_gauss_params, single_gauss_prediction, _, single_gaussian_rmse = fit_n_gaussians(1)
-        width = single_gauss_params[:, 1]
+        wavelength, flux, continuum = select_window(
+            (self.wavelength > center_wavelength - search_window[0]) & (self.wavelength < center_wavelength + search_window[1])
+        )
+
+        single_gauss_params, single_gauss_prediction, single_gaussian_rmse = fit_n_gaussians(1)
 
         # Ignore bad DIB detections
         if single_gaussian_rmse > 0.1:
             return None
 
-        # Select 5 sigma around the lowest point
+        # Narrow the window: select 5 sigma around the lowest point
+        width = single_gauss_params[:, 1]
         window_min = wavelength[np.argmin(single_gauss_prediction)] - 5 * width
         window_max = wavelength[np.argmin(single_gauss_prediction)] + 5 * width
-        range_mask = (self.wavelength > window_min) & (self.wavelength < window_max)
-        wavelength = self.wavelength[range_mask]
-        flux = self.flux[range_mask]
+        wavelength, flux, continuum = select_window(
+            (self.wavelength > window_min) & (self.wavelength < window_max)
+        )
 
         # Fit a n-Gaussian
         amount_of_gaussians = np.array([1, 2, 3])
         params_per_gauss = []
         prediction_per_gauss = []
-        continuum_per_gauss = []
         rmse_per_gauss = []
 
         # Fit for different amount of gaussians
@@ -237,22 +240,20 @@ class Spectrum:
 
             params_per_gauss.append(result[0])
             prediction_per_gauss.append(result[1])
-            continuum_per_gauss.append(result[2])
-            rmse_per_gauss.append(result[3])
+            rmse_per_gauss.append(result[2])
 
         if len(params_per_gauss) == 0:
             return None
 
         params_per_gauss = np.array(params_per_gauss, dtype=object)
         prediction_per_gauss = np.array(prediction_per_gauss)
-        continuum_per_gauss = np.array(continuum_per_gauss)
         rmse_per_gauss = np.array(rmse_per_gauss)
 
         # Gaussian properties
         # centers = [np.mean(params[:, 0], axis=0) for params in params_per_gauss]
         widths = np.array([np.max(params[:, 1], axis=0) for params in params_per_gauss])
         fwhms = 2 * np.sqrt(2 * np.log(2)) * widths
-        ews = np.array([simpson(1 - pred / cont, wavelength) for pred, cont in zip(prediction_per_gauss, continuum_per_gauss)])
+        ews = np.array([simpson(1 - pred / continuum, wavelength) for pred in prediction_per_gauss])
 
         # (Optional) Visualize the proces
         if ax is not None:
@@ -260,7 +261,7 @@ class Spectrum:
             ax.set_xlabel('Wavelength [$\\AA$]')
             ax.set_ylabel('Normalized flux + Offset')
 
-            for idx, (pred, n, rmserr, continuum, fwhm, ew) in enumerate(zip(prediction_per_gauss, amount_of_gaussians, rmse_per_gauss, continuum_per_gauss, fwhms, ews)):
+            for idx, (pred, n, rmserr, fwhm, ew) in enumerate(zip(prediction_per_gauss, amount_of_gaussians, rmse_per_gauss, fwhms, ews)):
                 height_diff = continuum[np.argmin(flux)] - np.min(flux)
                 offset = idx * height_diff
 
