@@ -265,7 +265,7 @@ class Spectrum:
         best_fwhm = fwhms[best_fit_mask]
         best_ews = ews[best_fit_mask]
 
-        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews
+        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews, window_min, window_max
         
 
 class FitsSpectrum(Spectrum):

@@ -2,10 +2,12 @@ import numpy as np
 from scipy.integrate import simpson
 
 class DibProfile:
-    def __init__(self, target, model, parameters):
+    def __init__(self, target, model, parameters, start=0, end=0):
         self.target = target
         self.model = model
         self.parameters = parameters
+        self.start = start
+        self.end = end
 
     def predict(self, wavelength):
         return self.model(wavelength, *self.parameters)
