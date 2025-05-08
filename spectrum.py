@@ -1,7 +1,7 @@
 from typing import Self
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, savgol_filter, detrend
 from sklearn.metrics import root_mean_squared_error
 from astropy.io import fits
 from astropy import constants as cst, units as u
@@ -9,10 +9,13 @@ import warnings
 from scipy.optimize import curve_fit, OptimizeWarning
 from scipy.integrate import simpson
 from datetime import datetime
+from scipy.ndimage import percentile_filter
 
 from dib_profile import DibProfile
-from models import n_gaussian
+from models import n_gaussian, GAUSSIAN_SIGMA
 from atomic_lines import AtomicLine
+
+
 
 class Spectrum:
     def __init__(self, target: str, wavelength: np.ndarray, flux: np.ndarray):
@@ -120,12 +123,13 @@ class Spectrum:
 
         return deleted_wvl_low, deleted_flux_low
 
-    def continuum(self, degree: int = None, max_degree = 6, ax: plt.Axes = None, wavelength = None, flux = None):
+    def continuum(self, degree: int = None, max_degree = 6, wavelength = None, flux = None):
         wavelength = self.wavelength if wavelength is None else wavelength
         flux = self.flux if flux is None else flux
+        coeffs = np.polyfit(wavelength, flux, degree) if degree is not None else None
 
         # (Optional) Calculate the polynomial degree that fits the best on the spectrum
-        if degree is None:
+        if coeffs is None:
             # Ignore warnings for a degree that is too high, because that is what is being tested here
             warnings.simplefilter('ignore', np.exceptions.RankWarning)
 
@@ -134,29 +138,58 @@ class Spectrum:
             rmse = [
                 root_mean_squared_error(
                     flux, # Observed
-                    np.poly1d( # Continuum fit
-                        np.polyfit(wavelength, flux, deg) # Polynamial coefficients
-                    )(wavelength)
+                    robust_continuum(wavelength, flux, deg)
                 ) for deg in degs
             ]
 
             degree = degs[np.argmin(rmse)]
+            coeffs = np.polyfit(wavelength, flux, degree)
 
-        continuum = np.poly1d(np.polyfit(wavelength, flux, deg=degree))(wavelength)
-
-        # (Optional) Visualize the proces
-        if ax is not None:
-            ax.plot(wavelength, flux, '.', ms=2)
-            ax.plot(wavelength, continuum, label=f'Continuum (degree {degree})')
-            ax.legend()
-
-        return continuum
+        return np.polyval(coeffs, wavelength)
 
     def normalize(self, degree: int = None, max_degree = 6, ax: plt.Axes = None):
         # Divide out the continuum
         self.flux /= self.continuum(degree, max_degree, ax)
+
+    def smooth(self, window_length = 30, polyorder = 5):
+        self.flux = savgol_filter(self.flux, window_length, polyorder)
+
+    def select_dibs(self, window_size = 20, window_step = 1, sigma_size = 3):
+        window_start = self.wavelength[0]
+        found_peaks = {}
+
+        while window_start + window_size <= self.wavelength[-1]:
+            # Select window
+            window_mask = (window_start < self.wavelength) & (self.wavelength < window_start + window_size)
+            wavelength = self.wavelength[window_mask]
+            flux = self.flux[window_mask]
+            peaks, props = find_peaks(-flux, width=10)
+
+            # Width of the peak in units of index
+            idx_fwhms = props['widths']
+            idx_widths = sigma_size * idx_fwhms / GAUSSIAN_SIGMA
+
+            for idx_peak, idx_width in zip(peaks, idx_widths):
+                idx_left_bound = np.floor(idx_peak - idx_width).astype(int)
+                idx_right_bound = np.ceil(idx_peak + idx_width).astype(int)
+
+                # Ignore peaks that are not fully in the window
+                if not 0 < idx_left_bound < len(wavelength) or not 0 < idx_right_bound < len(wavelength):
+                    continue
+
+                peak_center = wavelength[idx_peak]
+                left_bound = wavelength[idx_left_bound]
+                right_bound = wavelength[idx_right_bound]
+
+                # TODO: maybe select largest range instead of last found
+                found_peaks[peak_center] = (left_bound, right_bound)
+
+            # Move window
+            window_start += window_step
+
+        return found_peaks
         
-    def select_dib(self, center_wavelength: float, search_window: tuple[float, float] = (10, 10), ax: plt.Axes = None):
+    def fit_gaussian(self, center_wavelength: float, bounds: tuple, ax: plt.Axes = None):
         def select_window(range_mask):
             wavelength = self.wavelength[range_mask]
             flux = self.flux[range_mask]
@@ -178,12 +211,12 @@ class Spectrum:
             # Setup fit parameters and bounds
             init_width = 0.1
             init_amplitude = 0.1
-            init_skew = 2
+            init_skew = 0
             init_params = np.repeat([[center_wavelength, init_width, init_amplitude, init_skew]], n_gaussians, axis=0)
 
-            center_bound_range = 1
-            lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0, 0, -np.inf]], n_gaussians, axis=0)
-            upper_bounds = np.repeat([[center_wavelength + center_bound_range, np.inf, np.inf, np.inf]], n_gaussians, axis=0)
+            center_bound_range = 0.1
+            lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0, 0, -2]], n_gaussians, axis=0)
+            upper_bounds = np.repeat([[center_wavelength + center_bound_range, 2, 2, 2]], n_gaussians, axis=0)
 
             if init_centers is not None:
                 assert len(init_centers) == n_gaussians, f'the length of init_centers ({len(init_centers)}) must be the same as n_gaussians ({n_gaussians})'
@@ -195,39 +228,17 @@ class Spectrum:
             def model(wvl, *params_list):
                 return continuum + n_gaussian(wvl, *params_list)
             
-            try:
-                params, _ = curve_fit(
-                    model, wavelength, flux, maxfev=10_000,
-                    p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten())
-                )
+            # try:
+            params, _ = curve_fit(
+                model, wavelength, flux, maxfev=10_000,
+                p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten()),
+            )
 
-                return DibProfile(self.target, model, params)
-            except:
-                return None
+            return DibProfile(self.target, model, params)
 
         # Fit a single gaussian to narrow the window
         wavelength, flux, continuum = select_window(
-            (self.wavelength > center_wavelength - search_window[0]) & (self.wavelength < center_wavelength + search_window[1])
-        )
-
-        single_gauss_profile = fit_n_gaussians(1)
-
-        if single_gauss_profile is None:
-            return None
-
-        single_gauss_prediction = single_gauss_profile.predict(wavelength)
-        single_gaussian_rmse = single_gauss_profile.rmse(wavelength, flux)
-
-        # Ignore bad DIB detections
-        if single_gaussian_rmse > 0.1:
-            return None
-
-        # Narrow the window: select 5 sigma around the lowest point
-        width = single_gauss_profile.parameters[1] # parameters: [center, width, amplitude, skew]
-        window_min = wavelength[np.argmin(single_gauss_prediction)] - 5 * width
-        window_max = wavelength[np.argmin(single_gauss_prediction)] + 5 * width
-        wavelength, flux, continuum = select_window(
-            (self.wavelength > window_min) & (self.wavelength < window_max)
+            (self.wavelength > bounds[0]) & (self.wavelength < bounds[1])
         )
 
         # Fit for different amount of gaussians
@@ -254,6 +265,7 @@ class Spectrum:
                 offset = idx * height_diff
 
                 ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
+                ax.plot(wavelength, continuum + offset, color='C8')
                 ax.plot(wavelength, profile.predict(wavelength) + offset, color=f'C{idx + 1}', label=rf'RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
                 ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit', color=f'C{idx + 1}')
                 
@@ -265,7 +277,7 @@ class Spectrum:
         best_fwhm = fwhms[best_fit_mask]
         best_ews = ews[best_fit_mask]
 
-        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews, window_min, window_max
+        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews
         
 
 class FitsSpectrum(Spectrum):
@@ -296,3 +308,14 @@ class FitsSpectrum(Spectrum):
         # TODO: determine if identify_atomic_lines should be used here
 
         self.wavelength += (self.v_rad / cst.c.to('km/s')) * self.wavelength
+
+
+def robust_continuum(x, y, deg=2, sigma=2, max_iter=5):
+    mask = np.ones_like(y, dtype=bool)
+    for _ in range(max_iter):
+        coeffs = np.polyfit(x[mask], y[mask], deg)
+        fit = np.polyval(coeffs, x)
+        residuals = y - fit
+        std = np.std(residuals[mask])
+        mask = residuals > -sigma * std
+    return np.polyval(coeffs, x)

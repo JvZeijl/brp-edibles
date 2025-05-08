@@ -10,11 +10,11 @@ if not path.exists(OUTPUT_FOLDER):
 
 # Progressbar with fallback if tqdm is not installed
 _T = TypeVar("T")
-def tqdm(x: Iterable[_T], desc: str = ""):
+def tqdm(x: Iterable[_T], desc: str = "", position: int = 0):
     try:
         from tqdm import tqdm
 
-        return tqdm(x, desc)
+        return tqdm(x, desc, position=position)
     except ImportError:
         return x
 

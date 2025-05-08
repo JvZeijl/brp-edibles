@@ -1,5 +1,7 @@
 import numpy as np
 
+GAUSSIAN_SIGMA = 2 * np.sqrt(2 * np.log(2))
+
 def skewed_gauss(wavelength,centre,width,amplitude,skew,slope=0,c=1):
     exp_1=np.exp(-(((wavelength-centre)/(2*width))**2))
     exp_2=np.exp(-skew*np.arctan((wavelength-centre)/(width))) 
