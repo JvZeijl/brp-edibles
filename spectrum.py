@@ -243,14 +243,14 @@ class Spectrum:
             before_dib = flux[wavelength < center_wavelength - sigma3]
             after_dib = flux[wavelength > center_wavelength + sigma3]
 
-            start_idx_upper = flux == np.max(before_dib)
-            end_idx_upper = flux == np.max(after_dib)
+            start_idx_upper = np.argwhere(flux == np.max(before_dib))[0]
+            end_idx_upper = np.argwhere(flux == np.max(after_dib))[-1]
             slope_upper = (flux[start_idx_upper] - flux[end_idx_upper]) / (wavelength[start_idx_upper] - wavelength[end_idx_upper])
             intercept_upper = flux[start_idx_upper] - slope_upper * wavelength[start_idx_upper]
             continuum_upper = slope_upper * wavelength + intercept_upper
 
-            start_idx_lower = flux == np.min(before_dib)
-            end_idx_lower = flux == np.min(after_dib)
+            start_idx_lower = np.argwhere(flux == np.min(before_dib))[0]
+            end_idx_lower = np.argwhere(flux == np.min(after_dib))[-1]
             slope_lower = (flux[start_idx_lower] - flux[end_idx_lower]) / (wavelength[start_idx_lower] - wavelength[end_idx_lower])
             intercept_lower = flux[start_idx_lower] - slope_lower * wavelength[start_idx_lower]
             continuum_lower = slope_lower * wavelength + intercept_lower
