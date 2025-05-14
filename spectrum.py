@@ -233,18 +233,29 @@ class Spectrum:
         ax : plt.Axes | None
             Optionally plot the resulting fit
         """
+        sigma3 = (center_wavelength - bounds[0]) * 3 / 5
+
         def select_window(range_mask):
             wavelength = self.wavelength[range_mask]
             flux = self.flux[range_mask]
 
             # Determine continuum
-            mean_start_wvl, mean_start_flux = np.mean(wavelength[:3]), np.mean(flux[:3])
-            mean_end_wvl, mean_end_flux = np.mean(wavelength[-2:]), np.mean(flux[-2:])
-            slope = (mean_start_flux - mean_end_flux) / (mean_start_wvl - mean_end_wvl)
-            start = mean_start_flux - slope * mean_start_wvl
-            continuum = slope * wavelength + start
+            before_dib = flux[wavelength < center_wavelength - sigma3]
+            after_dib = flux[wavelength > center_wavelength + sigma3]
 
-            return wavelength, flux, continuum
+            start_idx_upper = flux == np.max(before_dib)
+            end_idx_upper = flux == np.max(after_dib)
+            slope_upper = (flux[start_idx_upper] - flux[end_idx_upper]) / (wavelength[start_idx_upper] - wavelength[end_idx_upper])
+            intercept_upper = flux[start_idx_upper] - slope_upper * wavelength[start_idx_upper]
+            continuum_upper = slope_upper * wavelength + intercept_upper
+
+            start_idx_lower = flux == np.min(before_dib)
+            end_idx_lower = flux == np.min(after_dib)
+            slope_lower = (flux[start_idx_lower] - flux[end_idx_lower]) / (wavelength[start_idx_lower] - wavelength[end_idx_lower])
+            intercept_lower = flux[start_idx_lower] - slope_lower * wavelength[start_idx_lower]
+            continuum_lower = slope_lower * wavelength + intercept_lower
+
+            return wavelength, flux, np.mean([continuum_lower, continuum_upper], axis=0), continuum_lower, continuum_upper
 
         def fit_n_gaussians(n_gaussians: int, init_centers = None):
             """
@@ -288,7 +299,7 @@ class Spectrum:
             return DibProfile(self.target, model, params)
 
         # Fit a single gaussian to narrow the window
-        wavelength, flux, continuum = select_window(
+        wavelength, flux, continuum, lower_continuum, upper_continuum = select_window(
             (self.wavelength > bounds[0]) & (self.wavelength < bounds[1])
         )
 
@@ -307,7 +318,8 @@ class Spectrum:
 
         # (Optional) Visualize the proces
         if ax is not None:
-            ax.set_title(rf'{self.target} | {self.format_obs_date()}; $\sigma={self.error():.4g}$')
+            ax.set_title(rf'{self.target} | {self.format_obs_date()}')
+            # ax.set_title(rf'{self.target} | {self.format_obs_date()}; $\sigma={self.error():.4g}$')
             ax.set_xlabel('Wavelength [$\\AA$]')
             ax.set_ylabel('Normalized flux + Offset')
 
@@ -315,9 +327,13 @@ class Spectrum:
                 height_diff = continuum[np.argmin(flux)] - np.min(flux)
                 offset = idx * (height_diff + 0.01)
 
-                # ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
-                ax.errorbar(wavelength, flux + offset, self.error(), fmt='.', color='C0', ms=5)
-                ax.plot(wavelength, continuum + offset, color='C8')
+                ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
+                # ax.errorbar(wavelength, flux + offset, self.error(), fmt='.', color='C0', ms=5)
+
+                ax.plot(wavelength, lower_continuum + offset, color='C6', linestyle='--', label='Lower Continuum' if idx == 0 else '')
+                ax.plot(wavelength, upper_continuum + offset, color='C7', linestyle='--', label='Upper Continuum' if idx == 0 else '')
+                ax.plot(wavelength, continuum + offset, color='C8', label='Mean Continuum' if idx == 0 else '')
+
                 ax.plot(wavelength, profile.predict(wavelength) + offset, color=f'C{idx + 1}', label=rf'RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
                 ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit', color=f'C{idx + 1}')
                 
