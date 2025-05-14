@@ -13,9 +13,11 @@ import warnings
 
 from dib_profile import DibProfile
 from models import n_gaussian, GAUSSIAN_SIGMA
-from atomic_lines import AtomicLine
 
-
+class AtomicLine:
+    def __init__(self, label: str, wavelength: float):
+        self.label = label
+        self.wavelength = wavelength
 
 class Spectrum:
     def __init__(self, target: str, wavelength: np.ndarray, flux: np.ndarray):
