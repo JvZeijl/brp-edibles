@@ -6,7 +6,9 @@ from astropy import constants as cst, units as u
 from datetime import datetime
 from scipy.signal import find_peaks, savgol_filter
 from scipy.optimize import curve_fit, OptimizeWarning
-from scipy.stats import linregress
+from sklearn.linear_model import LinearRegression
+from itertools import groupby
+from operator import itemgetter
 import warnings
 
 from dib_profile import DibProfile
@@ -159,41 +161,29 @@ class Spectrum:
     def smooth(self, window_length = 30, polyorder = 5):
         self.flux = savgol_filter(self.flux, window_length, polyorder)
 
-    def _find_error(self, min_window_size: float = 5, window_step: float = 1, r2_threshold: float = 0.99, return_segment = False):
-        window_start = self.wavelength[0]
-        window_size = min_window_size
-        best_segment = None
+    def _find_error(self, return_segment = False):
+        gradient = np.gradient(self.flux)
+        flat_mask = np.abs(gradient) < 2
 
-        while window_start + window_size <= self.wavelength[-1]:
-            # Select window
-            window_mask = (window_start < self.wavelength) & (self.wavelength < window_start + window_size)
-            wavelength = self.wavelength[window_mask]
-            flux = self.flux[window_mask]
+        indices = np.where(flat_mask)[0]
+        flat_regions = []
+        region_lengths = []
+        for _, g in groupby(enumerate(indices), lambda x: x[0] - x[1]):
+            group = list(map(itemgetter(1), g))
+            if len(group) > 50:  # Filter small regions
+                flat_regions.append((group[0], group[-1]))
+                region_lengths.append(len(group))
 
-            # Find linear segment in current window
-            slope, intercept, r_value, _, _ = linregress(wavelength, flux)
-            straight_segment = slope * wavelength + intercept
-            rmse = np.sqrt(np.sum((flux - straight_segment)**2) / flux.size)
-            r2 = r_value**2
+        best_region = flat_regions[np.argmax(region_lengths)]
+        wavelength = self.wavelength[best_region[0]:best_region[1]]
+        flux = self.flux[best_region[0]:best_region[1]]
+        wvl_matrix = wavelength.reshape(-1, 1)
 
-            # Set initial best_segment
-            if best_segment is None:
-                best_segment = (window_start, window_start + window_size, rmse, r_value**2)
-            # New segment is worse than previous one or is below the threshold --> start a new window
-            elif r2 < best_segment[2] or r2 < r2_threshold:
-                window_start += window_size
-                window_size = min_window_size
-            # Only change the best_segment if it is longer and r2 is better (closer to 1) or the same
-            # and increase the window size to possibly find a larger segment
-            elif window_size > best_segment[1] - best_segment[0]:
-                best_segment = (window_start, window_start + window_size, rmse, r_value**2)
-                window_size += window_step
+        model = LinearRegression().fit(wvl_matrix, flux)
+        pred = model.predict(wvl_matrix)
+        rmse = root_mean_squared_error(flux, pred)
 
-        if best_segment is None:
-            print('Could not estimate the error: no straigth segment found.')
-            return best_segment
-        
-        return best_segment if return_segment else best_segment[2]
+        return (rmse, wavelength[0], wavelength[-1]) if return_segment else rmse
 
     def select_dibs(self, window_size = 20, window_step = 1, sigma_size = 3):
         window_start = self.wavelength[0]
@@ -231,6 +221,18 @@ class Spectrum:
         return found_peaks
         
     def fit_gaussian(self, center_wavelength: float, bounds: tuple, ax: plt.Axes = None):
+        """
+        Parameters
+        ----------
+        center_wavelength : float
+            Expected middle of the DIB
+
+        bounds : tuple
+            Start and end of the DIB
+
+        ax : plt.Axes | None
+            Optionally plot the resulting fit
+        """
         def select_window(range_mask):
             wavelength = self.wavelength[range_mask]
             flux = self.flux[range_mask]
@@ -244,7 +246,16 @@ class Spectrum:
 
             return wavelength, flux, continuum
 
-        def fit_n_gaussians(n_gaussians, init_centers = None):
+        def fit_n_gaussians(n_gaussians: int, init_centers = None):
+            """
+            Parameters
+            ----------
+            n_gaussians : int
+                Amount of gaussians
+
+            init_centers: list[float] | None
+                Override the center_wavelength per peak, the length of init_centers must be the same as n_gaussians
+            """
             # Ignore overflow errors during fitting
             warnings.simplefilter('ignore', RuntimeWarning)
             warnings.simplefilter('ignore', OptimizeWarning)
@@ -269,7 +280,6 @@ class Spectrum:
             def model(wvl, *params_list):
                 return continuum + n_gaussian(wvl, *params_list)
             
-            # try:
             params, _ = curve_fit(
                 model, wavelength, flux, maxfev=10_000,
                 p0=init_params.flatten(), bounds=(lower_bounds.flatten(), upper_bounds.flatten()),
@@ -305,8 +315,8 @@ class Spectrum:
                 height_diff = continuum[np.argmin(flux)] - np.min(flux)
                 offset = idx * (height_diff + 0.01)
 
-                ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
-                # ax.errorbar(wavelength, flux + offset, self.error(), fmt='.', color='C0', ms=5)
+                # ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
+                ax.errorbar(wavelength, flux + offset, self.error(), fmt='.', color='C0', ms=5)
                 ax.plot(wavelength, continuum + offset, color='C8')
                 ax.plot(wavelength, profile.predict(wavelength) + offset, color=f'C{idx + 1}', label=rf'RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
                 ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit', color=f'C{idx + 1}')
