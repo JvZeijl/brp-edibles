@@ -366,7 +366,8 @@ class FitsSpectrum(Spectrum):
         super().__init__(header['OBJECT'], wavelength, flux)
 
         self.obs_date = datetime.fromisoformat(header["DATE-OBS"])
-        self.v_rad = header["HIERARCH ESO QC VRAD BARYCOR"] * u.km / u.s
+        self.v_rad_bary = header["HIERARCH ESO QC VRAD BARYCOR"] * u.km / u.s
+        self.v_rad_heli = header["HIERARCH ESO QC VRAD HELICOR"] * u.km / u.s
 
     def plot(self, ax: plt.Axes, title: str = None, x_label: str = None, y_label: str = None):
         return super().plot(ax, title or f'{self.target} | {self.obs_date}', x_label, y_label)
@@ -377,7 +378,7 @@ class FitsSpectrum(Spectrum):
     def correct_shift(self):
         # TODO: determine if identify_atomic_lines should be used here
 
-        self.wavelength += (self.v_rad / cst.c.to('km/s')) * self.wavelength
+        self.wavelength += (self.v_rad_bary / cst.c.to('km/s')) * self.wavelength
 
 
 def robust_continuum(x, y, deg=2, sigma=2, max_iter=5):
