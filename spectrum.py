@@ -149,6 +149,14 @@ class Spectrum:
         pred = model.predict(wvl_matrix)
         rmse = root_mean_squared_error(flux, pred)
 
+        plt.plot(wavelength, flux, '.', ms=2)
+        plt.plot(wavelength, pred)
+        plt.xlabel('Wavelength [Å]')
+        plt.ylabel('Flux')
+        plt.title(f'Error estimate of {self.target} | RMSE={rmse:.4g}')
+        plt.show()
+        plt.close()
+
         return (rmse, wavelength[0], wavelength[-1]) if return_segment else rmse
 
     def select_dibs(self, window_size = 20, window_step = 1, sigma_size = 3):
@@ -253,7 +261,7 @@ class Spectrum:
 
             center_bound_range = 0.1
             lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0, 0, -2]], n_gaussians, axis=0)
-            upper_bounds = np.repeat([[center_wavelength + center_bound_range, 2, 2, 2]], n_gaussians, axis=0)
+            upper_bounds = np.repeat([[center_wavelength + center_bound_range, 2, 1, 2]], n_gaussians, axis=0)
 
             if init_centers is not None:
                 assert len(init_centers) == n_gaussians, f'the length of init_centers ({len(init_centers)}) must be the same as n_gaussians ({n_gaussians})'
@@ -273,7 +281,8 @@ class Spectrum:
             return DibProfile(self.target, model, params)
 
         # Fit a single gaussian to narrow the window
-        wavelength, flux, upper_continuum, lower_continuum, continuum = select_window(
+        wavelength, flux, continuum, lower_continuum, upper_continuum = select_window(
+        # wavelength, flux, upper_continuum, lower_continuum, continuum = select_window(
             (self.wavelength > bounds[0]) & (self.wavelength < bounds[1])
         )
 
