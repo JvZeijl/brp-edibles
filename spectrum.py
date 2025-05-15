@@ -1,3 +1,4 @@
+from typing import Literal
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import root_mean_squared_error
@@ -24,7 +25,7 @@ class Spectrum:
         self.target = target
         self.wavelength = wavelength
         self.flux = flux
-        self._error = None
+        self.error = self._find_error()
 
     def plot(self, ax: plt.Axes, title: str = None, x_label: str = None, y_label: str = None):
         ax.plot(self.wavelength, self.flux, '.', ms=2)
@@ -35,12 +36,6 @@ class Spectrum:
     def format_obs_date(self):
         return 'unknown'
     
-    def error(self, force_mutate = False):
-        if self._error is None or force_mutate:
-            self._error = self._find_error()
-        
-        return self._error
-
     def identify_atomic_line(
         self,
         line1: AtomicLine,
@@ -132,37 +127,6 @@ class Spectrum:
 
         return deleted_wvl_low, deleted_flux_low
 
-    def continuum(self, degree: int = None, max_degree = 6, wavelength = None, flux = None):
-        wavelength = self.wavelength if wavelength is None else wavelength
-        flux = self.flux if flux is None else flux
-        coeffs = np.polyfit(wavelength, flux, degree) if degree is not None else None
-
-        # (Optional) Calculate the polynomial degree that fits the best on the spectrum
-        if coeffs is None:
-            # Ignore warnings for a degree that is too high, because that is what is being tested here
-            warnings.simplefilter('ignore', np.exceptions.RankWarning)
-
-            # Find a polynomial degree that fits the best
-            degs = np.arange(max_degree + 1)
-            rmse = [
-                root_mean_squared_error(
-                    flux, # Observed
-                    robust_continuum(wavelength, flux, deg)
-                ) for deg in degs
-            ]
-
-            degree = degs[np.argmin(rmse)]
-            coeffs = np.polyfit(wavelength, flux, degree)
-
-        return np.polyval(coeffs, wavelength)
-
-    def normalize(self, degree: int = None, max_degree = 6, ax: plt.Axes = None):
-        # Divide out the continuum
-        self.flux /= self.continuum(degree, max_degree, ax)
-
-    def smooth(self, window_length = 30, polyorder = 5):
-        self.flux = savgol_filter(self.flux, window_length, polyorder)
-
     def _find_error(self, return_segment = False):
         gradient = np.gradient(self.flux)
         flat_mask = np.abs(gradient) < 2
@@ -222,7 +186,7 @@ class Spectrum:
 
         return found_peaks
         
-    def fit_gaussian(self, center_wavelength: float, bounds: tuple, ax: plt.Axes = None):
+    def fit_gaussian(self, center_wavelength: float, bounds: tuple, ax: plt.Axes = None, show_error = False):
         """
         Parameters
         ----------
@@ -241,21 +205,29 @@ class Spectrum:
             wavelength = self.wavelength[range_mask]
             flux = self.flux[range_mask]
 
-            # Determine continuum
-            before_dib = flux[wavelength < center_wavelength - sigma3]
-            after_dib = flux[wavelength > center_wavelength + sigma3]
+            def continuum(mode: Literal['upper', 'lower']):
+                # The regions beyond 3-sigma are considered part of the continuum
+                left_anchor_region = flux[wavelength < center_wavelength - sigma3]
+                right_anchor_region = flux[wavelength > center_wavelength + sigma3]
 
-            start_idx_upper = np.argwhere(flux == np.max(before_dib))[0]
-            end_idx_upper = np.argwhere(flux == np.max(after_dib))[-1]
-            slope_upper = (flux[start_idx_upper] - flux[end_idx_upper]) / (wavelength[start_idx_upper] - wavelength[end_idx_upper])
-            intercept_upper = flux[start_idx_upper] - slope_upper * wavelength[start_idx_upper]
-            continuum_upper = slope_upper * wavelength + intercept_upper
+                # Determine the anchor points for the given mode
+                # [0] and [-1] select the most outward points if there are multiple values at the max/min
+                mode_fn = np.max if mode == 'upper' else np.min
+                left_anchor_idx = np.argwhere(flux == mode_fn(left_anchor_region))[0]
+                right_anchor_idx = np.argwhere(flux == mode_fn(right_anchor_region))[-1]
 
-            start_idx_lower = np.argwhere(flux == np.min(before_dib))[0]
-            end_idx_lower = np.argwhere(flux == np.min(after_dib))[-1]
-            slope_lower = (flux[start_idx_lower] - flux[end_idx_lower]) / (wavelength[start_idx_lower] - wavelength[end_idx_lower])
-            intercept_lower = flux[start_idx_lower] - slope_lower * wavelength[start_idx_lower]
-            continuum_lower = slope_lower * wavelength + intercept_lower
+                # Determine the line
+                slope = (flux[left_anchor_idx] - flux[right_anchor_idx]) / (wavelength[left_anchor_idx] - wavelength[right_anchor_idx])
+                intercept = flux[left_anchor_idx] - slope * wavelength[left_anchor_idx]
+
+                return slope * wavelength + intercept
+
+            # Min-max normalization and detrend by dividing out the upper continuum
+            flux = (flux - np.min(flux)) / (np.max(flux) - np.min(flux))
+            flux /= continuum('upper')
+
+            continuum_lower = continuum('lower')
+            continuum_upper = continuum('upper')
 
             return wavelength, flux, np.mean([continuum_lower, continuum_upper], axis=0), continuum_lower, continuum_upper
 
@@ -301,7 +273,7 @@ class Spectrum:
             return DibProfile(self.target, model, params)
 
         # Fit a single gaussian to narrow the window
-        wavelength, flux, continuum, lower_continuum, upper_continuum = select_window(
+        wavelength, flux, upper_continuum, lower_continuum, continuum = select_window(
             (self.wavelength > bounds[0]) & (self.wavelength < bounds[1])
         )
 
@@ -320,17 +292,22 @@ class Spectrum:
 
         # (Optional) Visualize the proces
         if ax is not None:
-            ax.set_title(rf'{self.target} | {self.format_obs_date()}')
-            # ax.set_title(rf'{self.target} | {self.format_obs_date()}; $\sigma={self.error():.4g}$')
+            if show_error:
+                ax.set_title(rf'{self.target} | {self.format_obs_date()}; $\sigma={self.error:.4g}$')
+            else:
+                ax.set_title(rf'{self.target} | {self.format_obs_date()}')
+
             ax.set_xlabel('Wavelength [$\\AA$]')
             ax.set_ylabel('Normalized flux + Offset')
 
             for idx, (n, profile, rmse, fwhm, ew) in enumerate(zip(amount_of_gaussians, dib_profiles, rmses, fwhms, ews)):
                 height_diff = continuum[np.argmin(flux)] - np.min(flux)
-                offset = idx * (height_diff + 0.01)
+                offset = idx * (height_diff + 0.5)
 
-                ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
-                # ax.errorbar(wavelength, flux + offset, self.error(), fmt='.', color='C0', ms=5)
+                if show_error:
+                    ax.errorbar(wavelength, flux + offset, self.error, fmt='.', color='C0', ms=5)
+                else:
+                    ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
 
                 ax.plot(wavelength, lower_continuum + offset, color='C6', linestyle='--', label='Lower Continuum' if idx == 0 else '')
                 ax.plot(wavelength, upper_continuum + offset, color='C7', linestyle='--', label='Upper Continuum' if idx == 0 else '')
@@ -376,17 +353,4 @@ class FitsSpectrum(Spectrum):
         return self.obs_date.strftime(r'%d-%m-%Y, %H:%M:%S')
     
     def correct_shift(self):
-        # TODO: determine if identify_atomic_lines should be used here
-
-        self.wavelength += (self.v_rad_bary / cst.c.to('km/s')) * self.wavelength
-
-
-def robust_continuum(x, y, deg=2, sigma=2, max_iter=5):
-    mask = np.ones_like(y, dtype=bool)
-    for _ in range(max_iter):
-        coeffs = np.polyfit(x[mask], y[mask], deg)
-        fit = np.polyval(coeffs, x)
-        residuals = y - fit
-        std = np.std(residuals[mask])
-        mask = residuals > -sigma * std
-    return np.polyval(coeffs, x)
+        self.wavelength += ((self.v_rad_bary + self.v_rad_heli) / cst.c.to('km/s')) * self.wavelength
