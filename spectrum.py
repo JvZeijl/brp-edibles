@@ -298,13 +298,16 @@ class Spectrum:
         )
 
         # Find substructure locations
-        substructure_peaks, _ = find_peaks(1-flux, prominence=0.01, height=0.2, width=2)
+        substructure_peaks, props = find_peaks(1-flux, prominence=0.01, height=0.2, width=2)
 
         # Sort the peaks such that the ones closest to the center are always fitted
         substructure_peaks = substructure_peaks[np.argsort(np.abs(wavelength[substructure_peaks] - center_wavelength))]
 
         if len(substructure_peaks) > 5:
-            print(f'[WARNING]: Found {len(substructure_peaks)} substructures around {center_wavelength:.2g} for {self.target} {self.format_obs_date()}')
+            print(f'[WARNING]: Found {len(substructure_peaks)} substructures around {center_wavelength:.2g} for {self.target} {self.format_obs_date()}, limiting to the 5 most prominent ones.')
+            
+            # Select the 5 most prominent peaks
+            substructure_peaks = substructure_peaks[np.argsort(props['prominences'])[-5:]]
 
         # Fit for different amount of gaussians (try the amount of peaks found or at least a triple)
         amount_of_gaussians = np.arange(1, max(len(substructure_peaks), 3) + 1)
@@ -321,6 +324,13 @@ class Spectrum:
         max_widths = np.array([np.max(param[:, 1], axis=0) for param in params])
         fwhms = 2 * np.sqrt(2 * np.log(2)) * max_widths
         ews = np.array([profile.equivalent_width(wavelength, continuum) for profile in dib_profiles])
+
+        rmse_change = np.diff(rmses, prepend=0) < 0.01
+        best_fit_idx = np.argwhere(rmses == np.min(rmses[rmse_change]))[0][0]
+        best_profile = dib_profiles[best_fit_idx]
+        best_rmse = rmses[best_fit_idx]
+        best_fwhm = fwhms[best_fit_idx]
+        best_ews = ews[best_fit_idx]
 
         # (Optional) Visualize the proces
         if ax is not None:
@@ -348,15 +358,9 @@ class Spectrum:
                 ax.plot(wavelength, continuum + offset, color='C8', label='Mean Continuum' if idx == 0 else '')
 
                 ax.plot(wavelength, profile.predict(wavelength) + offset, color=f'C{idx + 1}', label=rf'RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
-                ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit', color=f'C{idx + 1}')
+                ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit {'(best)' if idx == best_fit_idx else ''}', color=f'C{idx + 1}')
                 
             ax.legend()
-
-        best_fit_mask = np.argmin(rmses)
-        best_profile = dib_profiles[best_fit_mask]
-        best_rmse = rmses[best_fit_mask]
-        best_fwhm = fwhms[best_fit_mask]
-        best_ews = ews[best_fit_mask]
 
         return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews
         
