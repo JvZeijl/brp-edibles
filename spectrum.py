@@ -197,7 +197,7 @@ class Spectrum:
 
         return found_peaks
         
-    def fit_gaussian(self, center_wavelength: float, bounds: tuple, ax: plt.Axes = None, show_error = False):
+    def fit_gaussian(self, center_wavelength: float, bounds: tuple, ax: plt.Axes = None, show_error = False, max_gaussians = 5):
         """
         Parameters
         ----------
@@ -303,11 +303,11 @@ class Spectrum:
         # Sort the peaks such that the ones closest to the center are always fitted
         substructure_peaks = substructure_peaks[np.argsort(np.abs(wavelength[substructure_peaks] - center_wavelength))]
 
-        if len(substructure_peaks) > 5:
+        if len(substructure_peaks) > max_gaussians:
             print(f'[WARNING]: Found {len(substructure_peaks)} substructures around {center_wavelength:.2g} for {self.target} {self.format_obs_date()}, limiting to the 5 most prominent ones.')
             
             # Select the 5 most prominent peaks
-            substructure_peaks = substructure_peaks[np.argsort(props['prominences'])[-5:]]
+            substructure_peaks = substructure_peaks[np.argsort(props['prominences'])[-max_gaussians:]]
 
         # Fit for different amount of gaussians (try the amount of peaks found or at least a triple)
         amount_of_gaussians = np.arange(1, max(len(substructure_peaks), 3) + 1)
@@ -325,8 +325,9 @@ class Spectrum:
         fwhms = 2 * np.sqrt(2 * np.log(2)) * max_widths
         ews = np.array([profile.equivalent_width(wavelength, continuum) for profile in dib_profiles])
 
-        rmse_change = np.diff(rmses, prepend=0) < 0.01
-        best_fit_idx = np.argwhere(rmses == np.min(rmses[rmse_change]))[0][0]
+        # Prepend 0 such that the single gaussian will be selected if the other gaussians do not change wrt the single gaussian
+        rmse_change = np.abs(np.diff(rmses, prepend=0))
+        best_fit_idx = np.argwhere(rmses == np.min(rmses[rmse_change > 0.01]))[0][0]
         best_profile = dib_profiles[best_fit_idx]
         best_rmse = rmses[best_fit_idx]
         best_fwhm = fwhms[best_fit_idx]
