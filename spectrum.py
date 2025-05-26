@@ -263,8 +263,8 @@ class Spectrum:
             init_params = np.repeat([[center_wavelength, init_width, init_amplitude, init_skew]], n_gaussians, axis=0)
 
             center_bound_range = 0.1
-            lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0, 0, -2]], n_gaussians, axis=0)
-            upper_bounds = np.repeat([[center_wavelength + center_bound_range, 2, 1, 2]], n_gaussians, axis=0)
+            lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0.01, 0, -5]], n_gaussians, axis=0)
+            upper_bounds = np.repeat([[center_wavelength + center_bound_range, 3, 1, 5]], n_gaussians, axis=0)
 
             if init_centers is not None:
                 if len(init_centers) > n_gaussians:
@@ -304,7 +304,7 @@ class Spectrum:
         substructure_peaks = substructure_peaks[np.argsort(np.abs(wavelength[substructure_peaks] - center_wavelength))]
 
         if len(substructure_peaks) > max_gaussians:
-            print(f'[WARNING]: Found {len(substructure_peaks)} substructures around {center_wavelength:.2g} for {self.target} {self.format_obs_date()}, limiting to the 5 most prominent ones.')
+            # print(f'[WARNING]: Found {len(substructure_peaks)} substructures around {center_wavelength:.2g} for {self.target} {self.format_obs_date()}, limiting to the {max_gaussians} most prominent ones.')
             
             # Select the 5 most prominent peaks
             substructure_peaks = substructure_peaks[np.argsort(props['prominences'])[-max_gaussians:]]
