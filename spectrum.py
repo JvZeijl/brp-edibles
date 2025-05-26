@@ -149,13 +149,13 @@ class Spectrum:
         pred = model.predict(wvl_matrix)
         rmse = root_mean_squared_error(flux, pred)
 
-        plt.plot(wavelength, flux, '.', ms=2)
-        plt.plot(wavelength, pred)
-        plt.xlabel('Wavelength [Å]')
-        plt.ylabel('Flux')
-        plt.title(f'Error estimate of {self.target} | RMSE={rmse:.4g}')
-        plt.show()
-        plt.close()
+        # plt.plot(wavelength, flux, '.', ms=2)
+        # plt.plot(wavelength, pred)
+        # plt.xlabel('Wavelength [Å]')
+        # plt.ylabel('Flux')
+        # plt.title(f'Error estimate of {self.target} | RMSE={rmse:.4g}')
+        # plt.show()
+        # plt.close()
 
         return (rmse, wavelength[0], wavelength[-1]) if return_segment else rmse
 
@@ -186,8 +186,11 @@ class Spectrum:
                 left_bound = wavelength[idx_left_bound]
                 right_bound = wavelength[idx_right_bound]
 
-                # TODO: maybe select largest range instead of last found
-                found_peaks[peak_center] = (left_bound, right_bound)
+                existing_peak = found_peaks.get(peak_center)
+
+                # Only assign if not defined or window is larger
+                if existing_peak is None or right_bound - left_bound > existing_peak[1] - existing_peak[0]:
+                    found_peaks[peak_center] = (left_bound, right_bound)
 
             # Move window
             window_start += window_step
@@ -264,11 +267,19 @@ class Spectrum:
             upper_bounds = np.repeat([[center_wavelength + center_bound_range, 2, 1, 2]], n_gaussians, axis=0)
 
             if init_centers is not None:
-                assert len(init_centers) == n_gaussians, f'the length of init_centers ({len(init_centers)}) must be the same as n_gaussians ({n_gaussians})'
+                if len(init_centers) > n_gaussians:
+                    init_centers = init_centers[:n_gaussians]
+
+                init_center_bound_range = np.full_like(init_centers, 0.02)
+
+                if len(init_centers) < n_gaussians:
+                    n_extra_gaussians = n_gaussians - len(init_centers)
+                    init_centers = np.pad(init_centers, (0, n_extra_gaussians), 'constant', constant_values=center_wavelength)
+                    init_center_bound_range = np.pad(init_center_bound_range, (0, n_extra_gaussians), 'constant', constant_values=center_bound_range)
 
                 init_params[:, 0] = init_centers
-                lower_bounds[:, 0] = init_centers - center_bound_range
-                upper_bounds[:, 0] = init_centers + center_bound_range
+                lower_bounds[:, 0] = init_centers - init_center_bound_range
+                upper_bounds[:, 0] = init_centers + init_center_bound_range
 
             def model(wvl, *params_list):
                 return continuum + n_gaussian(wvl, *params_list)
@@ -286,9 +297,24 @@ class Spectrum:
             (self.wavelength > bounds[0]) & (self.wavelength < bounds[1])
         )
 
-        # Fit for different amount of gaussians
-        amount_of_gaussians = np.array([1, 2, 3])
-        dib_profiles = np.array([profile for n in amount_of_gaussians if (profile := fit_n_gaussians(n)) is not None], dtype=object)
+        # Find substructure locations
+        substructure_peaks, props = find_peaks(1-flux, prominence=0.01, height=0.2, width=2)
+
+        # Sort the peaks such that the ones closest to the center are always fitted
+        substructure_peaks = substructure_peaks[np.argsort(np.abs(wavelength[substructure_peaks] - center_wavelength))]
+
+        if len(substructure_peaks) > 5:
+            print(f'[WARNING]: Found {len(substructure_peaks)} substructures around {center_wavelength:.2g} for {self.target} {self.format_obs_date()}, limiting to the 5 most prominent ones.')
+            
+            # Select the 5 most prominent peaks
+            substructure_peaks = substructure_peaks[np.argsort(props['prominences'])[-5:]]
+
+        # Fit for different amount of gaussians (try the amount of peaks found or at least a triple)
+        amount_of_gaussians = np.arange(1, max(len(substructure_peaks), 3) + 1)
+        dib_profiles = np.array([
+            profile for n in amount_of_gaussians
+                if (profile := fit_n_gaussians(n, init_centers=wavelength[substructure_peaks])) is not None
+        ], dtype=object)
 
         if len(dib_profiles) == 0:
             return None
@@ -298,6 +324,13 @@ class Spectrum:
         max_widths = np.array([np.max(param[:, 1], axis=0) for param in params])
         fwhms = 2 * np.sqrt(2 * np.log(2)) * max_widths
         ews = np.array([profile.equivalent_width(wavelength, continuum) for profile in dib_profiles])
+
+        rmse_change = np.diff(rmses, prepend=0) < 0.01
+        best_fit_idx = np.argwhere(rmses == np.min(rmses[rmse_change]))[0][0]
+        best_profile = dib_profiles[best_fit_idx]
+        best_rmse = rmses[best_fit_idx]
+        best_fwhm = fwhms[best_fit_idx]
+        best_ews = ews[best_fit_idx]
 
         # (Optional) Visualize the proces
         if ax is not None:
@@ -318,20 +351,16 @@ class Spectrum:
                 else:
                     ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
 
+                ax.plot(wavelength[substructure_peaks], flux[substructure_peaks] + offset, 'x', color='black', ms=5, label='Substructure' if idx == 0 else '')
+
                 ax.plot(wavelength, lower_continuum + offset, color='C6', linestyle='--', label='Lower Continuum' if idx == 0 else '')
                 ax.plot(wavelength, upper_continuum + offset, color='C7', linestyle='--', label='Upper Continuum' if idx == 0 else '')
                 ax.plot(wavelength, continuum + offset, color='C8', label='Mean Continuum' if idx == 0 else '')
 
                 ax.plot(wavelength, profile.predict(wavelength) + offset, color=f'C{idx + 1}', label=rf'RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
-                ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit', color=f'C{idx + 1}')
+                ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit {'(best)' if idx == best_fit_idx else ''}', color=f'C{idx + 1}')
                 
             ax.legend()
-
-        best_fit_mask = np.argmin(rmses)
-        best_profile = dib_profiles[best_fit_mask]
-        best_rmse = rmses[best_fit_mask]
-        best_fwhm = fwhms[best_fit_mask]
-        best_ews = ews[best_fit_mask]
 
         return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews
         
