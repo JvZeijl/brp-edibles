@@ -41,7 +41,7 @@ class Spectrum:
         line1: AtomicLine,
         line2: AtomicLine,
         search_window = (10, 10),
-        tollerance = 1,
+        tollerance = None,
         axes: tuple[plt.Axes, plt.Axes] = None,
         draw_expected = False,
         output_radial_velocity = False,
@@ -55,7 +55,13 @@ class Spectrum:
         range_mask = (self.wavelength > min_wvl - search_window[0]) & (self.wavelength < max_wvl + search_window[1])
         wavelength = self.wavelength[range_mask]
         flux = self.flux[range_mask]
-        peaks, _ = find_peaks(-flux, height=-0.99, prominence=0.01)
+
+        # Search window is outside of the spectrum
+        if len(flux) == 0:
+            return None
+
+        flux = (flux - np.min(flux)) / (np.max(flux) - np.min(flux))
+        peaks, _ = find_peaks(1-flux, height=0.99, prominence=0.01)
 
         # Calculate the difference between all peaks using a matrix
         peaks_wvl = wavelength[peaks]
@@ -80,15 +86,23 @@ class Spectrum:
 
             axes[0].axvline(min_wvl - search_window[0], color='black')
             axes[0].axvline(max_wvl + search_window[1], color='black')
+            axes[0].plot(self.wavelength, self.flux, '.', ms=2)
+            axes[0].plot(
+                unique_candidates, # Wavelength
+                self.flux[np.isin(self.wavelength, unique_candidates)],
+                '.', ms=10, color='green', label='Line detection'
+            )
+
             axes[1].set_xlim(min_wvl - search_window[0], max_wvl + search_window[1])
+            axes[1].plot(wavelength, flux, '.', ms=2)
+            axes[1].plot(
+                unique_candidates, # Wavelength
+                flux[np.isin(wavelength, unique_candidates)],
+                '.', ms=10, color='green', label='Line detection'
+            )
 
             for ax, title in zip(axes, ('Full spectrum', 'Search window')):
-                self.plot(ax, title)
-                ax.plot(
-                    unique_candidates, # Wavelength
-                    self.flux[np.isin(self.wavelength, unique_candidates)],
-                    '.', ms=10, color='green', label='Line detection'
-                )
+                ax.set_title(title)
 
                 if draw_expected:
                     ax.axvline(line1.wavelength, linestyle='--', color='orange', label=fr'{line1.label}: $\lambda=${line1.wavelength} Å')
