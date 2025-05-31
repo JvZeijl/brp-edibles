@@ -107,7 +107,10 @@ class Spectrum:
             window_mask = (window_start < self.wavelength) & (self.wavelength < window_start + window_size)
             wavelength = self.wavelength[window_mask]
             flux = self.flux[window_mask]
-            flux = (flux - np.min(flux)) / (np.max(flux) - np.min(flux))
+
+            if len(flux) > 0:
+                flux = (flux - np.min(flux)) / (np.max(flux) - np.min(flux))
+                
             peaks, props = find_peaks(1-flux, width=10)
 
             # Width of the peak in units of index
@@ -270,7 +273,7 @@ class Spectrum:
         best_rmse = rmses[best_fit_idx]
         best_r2 = r2s[best_fit_idx]
         best_fwhm = fwhms[best_fit_idx]
-        best_ews = ews[best_fit_idx]
+        best_ew = ews[best_fit_idx]
 
         # (Optional) Visualize the proces
         if ax is not None:
@@ -302,7 +305,22 @@ class Spectrum:
                 
             ax.legend()
 
-        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_r2, best_fwhm, best_ews
+        # Create a latex table string
+        latexstr = rf'{center_wavelength:.0f} \AA{{}} & {best_rmse:.4g} & {best_fwhm:.4g} & {best_ew:.4g} & '
+        params_per_profile = np.reshape(best_profile.parameters, (-1, 4))
+
+        for i, profile_params in enumerate(params_per_profile):
+            latexstr += f'{profile_params[0]:.6g} & {profile_params[1]:.4g} & {profile_params[2]:.4g} & {'\\hspace{-3pt}' if profile_params[3] < 0 else ''}{profile_params[3]:.4g} \\\\\n'
+
+            # End with horizontal line
+            if i + 1 == len(params_per_profile):
+                latexstr += '\\hline\n'
+            # Skip the first columns for additional profiles of the same DIB
+            else:
+                latexstr += '& & & & '
+
+
+        return params_per_profile, best_rmse, best_r2, best_fwhm, best_ew, latexstr
         
 
 class FitsSpectrum(Spectrum):
