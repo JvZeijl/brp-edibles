@@ -107,7 +107,8 @@ class Spectrum:
             window_mask = (window_start < self.wavelength) & (self.wavelength < window_start + window_size)
             wavelength = self.wavelength[window_mask]
             flux = self.flux[window_mask]
-            peaks, props = find_peaks(-flux, width=10)
+            flux = (flux - np.min(flux)) / (np.max(flux) - np.min(flux))
+            peaks, props = find_peaks(1-flux, width=10)
 
             # Width of the peak in units of index
             idx_fwhms = props['widths']
@@ -144,21 +145,21 @@ class Spectrum:
             Expected middle of the DIB
 
         bounds : tuple
-            Start and end of the DIB
+            Start and end of the DIB (assumed to contain 3 sigma on each side of center_wavelength)
 
         ax : plt.Axes | None
             Optionally plot the resulting fit
         """
-        sigma3 = (center_wavelength - bounds[0]) * 3 / 5
+        sigma2 = (center_wavelength - bounds[0]) * 2 / 3
 
         def select_window(range_mask):
             wavelength = self.wavelength[range_mask]
             flux = self.flux[range_mask]
 
             def continuum(mode: Literal['upper', 'lower']):
-                # The regions beyond 3-sigma are considered part of the continuum
-                left_anchor_region = flux[wavelength < center_wavelength - sigma3]
-                right_anchor_region = flux[wavelength > center_wavelength + sigma3]
+                # The regions beyond 2-sigma are considered part of the continuum
+                left_anchor_region = flux[wavelength < center_wavelength - sigma2]
+                right_anchor_region = flux[wavelength > center_wavelength + sigma2]
 
                 # Determine the anchor points for the given mode
                 # [0] and [-1] select the most outward points if there are multiple values at the max/min
@@ -202,8 +203,8 @@ class Spectrum:
             init_params = np.repeat([[center_wavelength, init_width, init_amplitude, init_skew]], n_gaussians, axis=0)
 
             center_bound_range = 0.1
-            lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0.01, 0, -5]], n_gaussians, axis=0)
-            upper_bounds = np.repeat([[center_wavelength + center_bound_range, 3, 1, 5]], n_gaussians, axis=0)
+            lower_bounds = np.repeat([[center_wavelength - center_bound_range, 0, 0, -2]], n_gaussians, axis=0)
+            upper_bounds = np.repeat([[center_wavelength + center_bound_range, 10, 1, 2]], n_gaussians, axis=0)
 
             if init_centers is not None:
                 if len(init_centers) > n_gaussians:
@@ -232,7 +233,6 @@ class Spectrum:
 
         # Fit a single gaussian to narrow the window
         wavelength, flux, continuum, lower_continuum, upper_continuum = select_window(
-        # wavelength, flux, upper_continuum, lower_continuum, continuum = select_window(
             (self.wavelength > bounds[0]) & (self.wavelength < bounds[1])
         )
 
@@ -242,10 +242,8 @@ class Spectrum:
         # Sort the peaks such that the ones closest to the center are always fitted
         substructure_peaks = substructure_peaks[np.argsort(np.abs(wavelength[substructure_peaks] - center_wavelength))]
 
+        # Select the 5 most prominent peaks
         if len(substructure_peaks) > max_gaussians:
-            # print(f'[WARNING]: Found {len(substructure_peaks)} substructures around {center_wavelength:.2g} for {self.target} {self.format_obs_date()}, limiting to the {max_gaussians} most prominent ones.')
-            
-            # Select the 5 most prominent peaks
             substructure_peaks = substructure_peaks[np.argsort(props['prominences'])[-max_gaussians:]]
 
         # Fit for different amount of gaussians (try the amount of peaks found or at least a triple)
@@ -259,6 +257,7 @@ class Spectrum:
             return None
 
         rmses = np.array([profile.rmse(wavelength, flux) for profile in dib_profiles])
+        r2s = np.array([profile.r2(wavelength, flux) for profile in dib_profiles])
         params = np.array([np.reshape(profile.parameters, (-1, 4)) for profile in dib_profiles], dtype=object)
         max_widths = np.array([np.max(param[:, 1], axis=0) for param in params])
         fwhms = 2 * np.sqrt(2 * np.log(2)) * max_widths
@@ -269,6 +268,7 @@ class Spectrum:
         best_fit_idx = np.argwhere(rmses == np.min(rmses[rmse_change > 0.01]))[0][0]
         best_profile = dib_profiles[best_fit_idx]
         best_rmse = rmses[best_fit_idx]
+        best_r2 = r2s[best_fit_idx]
         best_fwhm = fwhms[best_fit_idx]
         best_ews = ews[best_fit_idx]
 
@@ -291,18 +291,18 @@ class Spectrum:
                 else:
                     ax.plot(wavelength, flux + offset, '.', color='C0', ms=5)
 
-                ax.plot(wavelength[substructure_peaks], flux[substructure_peaks] + offset, 'x', color='black', ms=5, label='Substructure' if idx == 0 else '')
+                # ax.plot(wavelength[substructure_peaks], flux[substructure_peaks] + offset, 'x', color='black', ms=5, label='Substructure' if idx == 0 else '')
 
                 ax.plot(wavelength, lower_continuum + offset, color='C6', linestyle='--', label='Lower Continuum' if idx == 0 else '')
                 ax.plot(wavelength, upper_continuum + offset, color='C7', linestyle='--', label='Upper Continuum' if idx == 0 else '')
                 ax.plot(wavelength, continuum + offset, color='C8', label='Mean Continuum' if idx == 0 else '')
 
                 ax.plot(wavelength, profile.predict(wavelength) + offset, color=f'C{idx + 1}', label=rf'RMSE={rmse:.4g}, FWHM={fwhm:.4g}, EW={ew:.4g}')
-                ax.text(wavelength[0], flux[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit {'(best)' if idx == best_fit_idx else ''}', color=f'C{idx + 1}')
+                ax.text(wavelength[0], lower_continuum[0] + offset - height_diff * 0.1, rf'{n}-Gaussian fit {'(best)' if idx == best_fit_idx else ''}', color=f'C{idx + 1}')
                 
             ax.legend()
 
-        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_fwhm, best_ews
+        return np.reshape(best_profile.parameters, (-1, 4)), best_rmse, best_r2, best_fwhm, best_ews
         
 
 class FitsSpectrum(Spectrum):
