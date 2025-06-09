@@ -349,4 +349,4 @@ class FitsSpectrum(Spectrum):
         return self.obs_date.strftime(r'%d-%m-%Y, %H:%M:%S')
     
     def correct_shift(self):
-        self.wavelength += ((self.v_rad_bary + self.v_rad_heli) / cst.c.to('km/s')) * self.wavelength
+        self.wavelength += self.v_rad_bary / cst.c.to('km/s') * self.wavelength
